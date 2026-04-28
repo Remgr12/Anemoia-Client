@@ -1,0 +1,16 @@
+[package]
+name = "launcher"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "anemoia-launcher"
+path = "src/main.rs"
+
+[dependencies]
+log.workspace = true
+simplelog.workspace = true
+anyhow.workspace = true
+sysinfo.workspace = true
+egui.workspace = true
+eframe.workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "injector"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "anemoia-inject"
+path = "src/main.rs"
+
+[dependencies]
+log.workspace = true
+simplelog.workspace = true
+anyhow.workspace = true
+sysinfo.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ptrace-inject = "0.1.2"
+proc-maps = "0.4.0"

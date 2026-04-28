@@ -1,0 +1,21 @@
+[package]
+name = "agent_loader"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "agent_loader"
+crate-type = ["cdylib"]
+
+# used_linker requires nightly; the stable #[used] default is sufficient for
+# dlopen-based injection on Linux.
+[features]
+
+[dependencies]
+ctor = "0.2"
+log.workspace = true
+simplelog.workspace = true
+anyhow.workspace = true
+libloading = "0.8"
+jni = { version = "0.21" }
+libc.workspace = true
