@@ -8,13 +8,16 @@ Anemoia Client is a modular Minecraft “ghost client” for Linux. This reposit
 
 ## Quick start
 
-> If this repo includes build/install instructions elsewhere (for example in a `docs/` folder or release notes), follow those first.
-
 - Clone:
   ```bash
   git clone https://github.com/Remgr12/Anemoia-Client.git
   cd Anemoia-Client
   ```
+-Build
+ ```bash
+ chmod +x build.sh
+ ./build.sh
+ ```
 
 ## Lua API
 
