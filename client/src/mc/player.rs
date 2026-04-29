@@ -1,8 +1,7 @@
 use anyhow::Result;
 use jni::{objects::GlobalRef, JNIEnv};
-use std::sync::Arc;
 
-use super::minecraft::Minecraft;
+use super::{minecraft::Minecraft, packet::Connection, item::ItemStack};
 
 /// Wraps a JNI global reference to the local player entity.
 ///
@@ -116,7 +115,222 @@ impl LocalPlayer {
         )?;
         Ok(())
     }
+
+    pub fn on_ground(&self, env: &mut JNIEnv) -> Result<bool> {
+        Ok(env
+            .call_method(self.jni_ref.as_obj(), "onGround", "()Z", &[])?
+            .z()?)
+    }
+
+    pub fn set_on_ground(&self, env: &mut JNIEnv, on_ground: bool) -> Result<()> {
+        env.set_field(
+            self.jni_ref.as_obj(),
+            "onGround",
+            "Z",
+            jni::objects::JValue::Bool(on_ground as jni::sys::jboolean),
+        )?;
+        Ok(())
+    }
+
+    pub fn is_sprinting(&self, env: &mut JNIEnv) -> Result<bool> {
+        Ok(env
+            .call_method(self.jni_ref.as_obj(), "isSprinting", "()Z", &[])?
+            .z()?)
+    }
+
+    pub fn set_sprinting(&self, env: &mut JNIEnv, sprinting: bool) -> Result<()> {
+        env.call_method(
+            self.jni_ref.as_obj(),
+            "setSprinting",
+            "(Z)V",
+            &[jni::objects::JValue::Bool(sprinting as jni::sys::jboolean)],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_fall_distance(&self, env: &mut JNIEnv) -> Result<f32> {
+        Ok(env.get_field(self.jni_ref.as_obj(), "fallDistance", "F")?.f()?)
+    }
+
+    pub fn get_hurt_time(&self, env: &mut JNIEnv) -> Result<i32> {
+        Ok(env.get_field(self.jni_ref.as_obj(), "hurtTime", "I")?.i()?)
+    }
+
+    pub fn get_input(&self, env: &mut JNIEnv) -> Result<PlayerInput> {
+        let input_obj = env
+            .get_field(self.jni_ref.as_obj(), "input", "Lnet/minecraft/client/player/Input;")?
+            .l()?;
+        
+        let left = env.get_field(&input_obj, "left", "Z")?.z()?;
+        let right = env.get_field(&input_obj, "right", "Z")?.z()?;
+        let up = env.get_field(&input_obj, "up", "Z")?.z()?;
+        let down = env.get_field(&input_obj, "down", "Z")?.z()?;
+        let jumping = env.get_field(&input_obj, "jumping", "Z")?.z()?;
+        let shift_key_down = env.get_field(&input_obj, "shiftKeyDown", "Z")?.z()?;
+
+        Ok(PlayerInput {
+            left,
+            right,
+            up,
+            down,
+            jumping,
+            shift_key_down,
+        })
+    }
+
+    pub fn get_inventory(&self, env: &mut JNIEnv) -> Result<PlayerInventory> {
+        let inv_obj = env
+            .get_field(
+                self.jni_ref.as_obj(),
+                "inventory",
+                "Lnet/minecraft/world/entity/player/Inventory;",
+            )?
+            .l()?;
+        Ok(PlayerInventory {
+            jni_ref: env.new_global_ref(inv_obj)?,
+        })
+    }
+
+    pub fn get_connection(&self, env: &mut JNIEnv) -> Result<Connection> {
+        let listener_obj = env.get_field(
+            self.jni_ref.as_obj(),
+            "connection",
+            "Lnet/minecraft/client/multiplayer/ClientPacketListener;"
+        )?.l()?;
+        
+        let connection_obj = env.get_field(
+            &listener_obj,
+            "connection",
+            "Lnet/minecraft/network/Connection;"
+        )?.l()?;
+
+        Ok(Connection {
+            jni_ref: env.new_global_ref(connection_obj)?
+        })
+    }
+
+    pub fn is_using_item(&self, env: &mut JNIEnv) -> Result<bool> {
+        Ok(env.call_method(self.jni_ref.as_obj(), "isUsingItem", "()Z", &[])?.z()?)
+    }
+
+    pub fn stop_using_item(&self, env: &mut JNIEnv) -> Result<()> {
+        env.call_method(self.jni_ref.as_obj(), "stopUsingItem", "()V", &[])?;
+        Ok(())
+    }
+
+    pub fn get_food_level(&self, env: &mut JNIEnv) -> Result<i32> {
+        let food_data = env.call_method(self.jni_ref.as_obj(), "getFoodData", "()Lnet/minecraft/world/food/FoodData;", &[])?.l()?;
+        Ok(env.call_method(&food_data, "getFoodLevel", "()I", &[])?.i()?)
+    }
+
+    pub fn get_main_hand_item(&self, env: &mut JNIEnv) -> Result<ItemStack> {
+        let obj = env.call_method(self.jni_ref.as_obj(), "getMainHandItem", "()Lnet/minecraft/world/item/ItemStack;", &[])?.l()?;
+        Ok(ItemStack { jni_ref: env.new_global_ref(obj)? })
+    }
+
+    pub fn get_off_hand_item(&self, env: &mut JNIEnv) -> Result<ItemStack> {
+        let obj = env.call_method(self.jni_ref.as_obj(), "getOffhandItem", "()Lnet/minecraft/world/item/ItemStack;", &[])?.l()?;
+        Ok(ItemStack { jni_ref: env.new_global_ref(obj)? })
+    }
+
+    pub fn has_effect(&self, env: &mut JNIEnv, effect_obj: jni::objects::JObject) -> Result<bool> {
+        Ok(env.call_method(
+            self.jni_ref.as_obj(),
+            "hasEffect",
+            "(Lnet/minecraft/world/effect/MobEffect;)Z",
+            &[jni::objects::JValue::Object(&effect_obj)],
+        )?.z()?)
+    }
+
+    pub fn jump(&self, env: &mut JNIEnv) -> Result<()> {
+        env.call_method(self.jni_ref.as_obj(), "jumpFromGround", "()V", &[])?;
+        Ok(())
+    }
+
+    pub fn get_step_height(&self, env: &mut JNIEnv) -> Result<f32> {
+        Ok(env.get_field(self.jni_ref.as_obj(), "maxUpStep", "F")?.f()?)
+    }
+
+    pub fn set_step_height(&self, env: &mut JNIEnv, height: f32) -> Result<()> {
+        env.set_field(self.jni_ref.as_obj(), "maxUpStep", "F", jni::objects::JValue::Float(height))?;
+        Ok(())
+    }
+
+    pub fn is_collided_horizontally(&self, env: &mut JNIEnv) -> Result<bool> {
+        Ok(env.get_field(self.jni_ref.as_obj(), "horizontalCollision", "Z")?.z()?)
+    }
+
+    pub fn is_in_water(&self, env: &mut JNIEnv) -> Result<bool> {
+        Ok(env.call_method(self.jni_ref.as_obj(), "isInWater", "()Z", &[])?.z()?)
+    }
+
+    pub fn is_in_lava(&self, env: &mut JNIEnv) -> Result<bool> {
+        Ok(env.call_method(self.jni_ref.as_obj(), "isInLava", "()Z", &[])?.z()?)
+    }
+
+    pub fn is_dead(&self, env: &mut JNIEnv) -> Result<bool> {
+        Ok(env.get_field(self.jni_ref.as_obj(), "dead", "Z")?.z()?)
+    }
+
+    pub fn respawn(&self, env: &mut JNIEnv) -> Result<()> {
+        env.call_method(self.jni_ref.as_obj(), "respawn", "()V", &[])?;
+        Ok(())
+    }
+
+    pub fn is_in_web(&self, env: &mut JNIEnv) -> Result<bool> {
+        // In modern MC, this is often a field or a check in movement logic.
+        // Let's check the field 'sticking' or similar, or just check the block under feet.
+        // For simplicity, let's assume there is a field or we check block.
+        Ok(env.get_field(self.jni_ref.as_obj(), "wasInPowderSnow", "Z")?.z()?)
+    }
+
+    pub fn remove_effect(&self, env: &mut JNIEnv, effect_obj: jni::objects::JObject) -> Result<()> {
+        env.call_method(
+            self.jni_ref.as_obj(),
+            "removeEffect",
+            "(Lnet/minecraft/world/effect/MobEffect;)Z",
+            &[jni::objects::JValue::Object(&effect_obj)],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_container_id(&self, env: &mut JNIEnv) -> Result<i32> {
+        let container = env.get_field(self.jni_ref.as_obj(), "containerMenu", "Lnet/minecraft/world/inventory/AbstractContainerMenu;")?.l()?;
+        Ok(env.get_field(&container, "containerId", "I")?.i()?)
+    }
+
+    pub fn get_destroy_speed(&self, env: &mut JNIEnv, block_state: &super::world::BlockState) -> Result<f32> {
+        Ok(env.call_method(self.jni_ref.as_obj(), "getDestroySpeed", "(Lnet/minecraft/world/level/block/state/BlockState;)F", &[
+            jni::objects::JValue::Object(block_state.jni_ref.as_obj())
+        ])?.f()?)
+    }
 }
 
-/// mlua-compatible wrapper. The `Arc` lets multiple Lua closures share the ref.
-pub struct LuaPlayer(pub Arc<LocalPlayer>);
+pub struct PlayerInventory {
+    pub jni_ref: GlobalRef,
+}
+
+impl PlayerInventory {
+    pub fn get_selected_slot(&self, env: &mut JNIEnv) -> Result<i32> {
+        Ok(env.get_field(self.jni_ref.as_obj(), "selected", "I")?.i()?)
+    }
+
+    pub fn set_selected_slot(&self, env: &mut JNIEnv, slot: i32) -> Result<()> {
+        env.set_field(
+            self.jni_ref.as_obj(),
+            "selected",
+            "I",
+            jni::objects::JValue::Int(slot),
+        )?;
+        Ok(())
+    }
+}
+
+pub struct PlayerInput {
+    pub left: bool,
+    pub right: bool,
+    pub up: bool,
+    pub down: bool,
+    pub jumping: bool,
+    pub shift_key_down: bool,
+}

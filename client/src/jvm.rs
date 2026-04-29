@@ -16,11 +16,17 @@ unsafe impl Sync for Jvm {}
 static INSTANCE: OnceLock<Jvm> = OnceLock::new();
 
 impl Jvm {
-    pub fn init() -> Result<()> {
+    /// Initialise from the `JavaVM*` passed by the JVM to `Agent_OnAttach`.
+    /// Falls back to `JNI_GetCreatedJavaVMs` if the pointer is null.
+    pub fn init(raw_jvm: *mut RawJavaVM) -> Result<()> {
         if INSTANCE.get().is_some() {
             return Ok(());
         }
-        let raw = unsafe { find_jvm()? };
+        let raw = if !raw_jvm.is_null() {
+            raw_jvm
+        } else {
+            unsafe { find_jvm()? }
+        };
         let inner = unsafe { JavaVM::from_raw(raw)? };
         INSTANCE
             .set(Jvm { inner })
@@ -39,17 +45,50 @@ impl Jvm {
     pub fn attach(&self) -> Result<jni::JNIEnv<'_>> {
         Ok(self.inner.attach_current_thread_as_daemon()?)
     }
+
+    /// Finds a class. If `env.find_class` fails (e.g. because we are in a native hook
+    /// and the system class loader is used), this falls back to using the current thread's
+    /// context class loader.
+    pub fn find_class<'a>(env: &mut jni::JNIEnv<'a>, name: &str) -> Result<jni::objects::JClass<'a>> {
+        match env.find_class(name) {
+            Ok(cls) => Ok(cls),
+            Err(_) => {
+                if env.exception_check()? {
+                    env.exception_clear()?;
+                }
+                
+                let thread_cls = env.find_class("java/lang/Thread")?;
+                let current_thread = env
+                    .call_static_method(thread_cls, "currentThread", "()Ljava/lang/Thread;", &[])?
+                    .l()?;
+
+                let class_loader = env
+                    .call_method(current_thread, "getContextClassLoader", "()Ljava/lang/ClassLoader;", &[])?
+                    .l()?;
+
+                let dotted_name = name.replace('/', ".");
+                let jname = env.new_string(dotted_name)?;
+
+                let cls_obj = env
+                    .call_method(
+                        class_loader,
+                        "loadClass",
+                        "(Ljava/lang/String;)Ljava/lang/Class;",
+                        &[jni::objects::JValue::from(&jname)],
+                    )?
+                    .l()?;
+
+                Ok(jni::objects::JClass::from(cls_obj))
+            }
+        }
+    }
 }
 
 type GetCreatedJVMsFn =
     unsafe extern "C" fn(*mut *mut RawJavaVM, jsize, *mut jsize) -> jint;
 
 unsafe fn find_jvm() -> Result<*mut RawJavaVM> {
-    let sym = libc::dlsym(
-        libc::RTLD_DEFAULT,
-        b"JNI_GetCreatedJavaVMs\0".as_ptr() as *const libc::c_char,
-    );
-
+    let sym = find_jni_symbol();
     anyhow::ensure!(!sym.is_null(), "JNI_GetCreatedJavaVMs not found in process");
 
     let get_vms: GetCreatedJVMsFn = std::mem::transmute(sym);
@@ -62,4 +101,41 @@ unsafe fn find_jvm() -> Result<*mut RawJavaVM> {
     );
 
     Ok(raw)
+}
+
+/// Look up `JNI_GetCreatedJavaVMs` via RTLD_DEFAULT first, then by opening
+/// libjvm.so directly. The JVM may load libjvm.so with RTLD_LOCAL (not
+/// RTLD_GLOBAL), hiding it from RTLD_DEFAULT.
+unsafe fn find_jni_symbol() -> *mut libc::c_void {
+    let name = b"JNI_GetCreatedJavaVMs\0".as_ptr() as *const libc::c_char;
+
+    let sym = libc::dlsym(libc::RTLD_DEFAULT, name);
+    if !sym.is_null() {
+        return sym;
+    }
+
+    // Scan /proc/self/maps for libjvm.so and open it directly.
+    let maps = match std::fs::read_to_string("/proc/self/maps") {
+        Ok(m) => m,
+        Err(_) => return std::ptr::null_mut(),
+    };
+
+    for line in maps.lines() {
+        if !line.contains("libjvm.so") {
+            continue;
+        }
+        if let Some(path) = line.split_whitespace().last() {
+            if let Ok(cpath) = std::ffi::CString::new(path) {
+                let handle = libc::dlopen(cpath.as_ptr(), libc::RTLD_LAZY | libc::RTLD_NOLOAD);
+                if !handle.is_null() {
+                    let sym = libc::dlsym(handle, name);
+                    if !sym.is_null() {
+                        return sym;
+                    }
+                }
+            }
+        }
+    }
+
+    std::ptr::null_mut()
 }

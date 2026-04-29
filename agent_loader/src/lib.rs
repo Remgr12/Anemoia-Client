@@ -20,6 +20,7 @@ use std::{
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static LOADED_LIB: OnceLock<Mutex<Option<Library>>> = OnceLock::new();
+static SAVED_JVM: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 #[no_mangle]
 #[ctor]
@@ -54,6 +55,18 @@ fn agent_onunload() {
 
 extern "C" fn handle_signal(_: libc::c_int) {
     RUNNING.store(false, Ordering::SeqCst);
+}
+
+/// Called by the JVM after loading the library via the Attach API.
+/// Saves the `JavaVM*` so we can pass it to the client on load.
+#[no_mangle]
+pub extern "C" fn Agent_OnAttach(
+    vm: *mut libc::c_void,
+    _options: *mut libc::c_char,
+    _reserved: *mut libc::c_void,
+) -> i32 {
+    SAVED_JVM.store(vm as usize, std::sync::atomic::Ordering::SeqCst);
+    0 // JNI_OK
 }
 
 // ── JVM health monitor ───────────────────────────────────────────────────────
@@ -143,6 +156,15 @@ fn reload_client(path: &str) -> anyhow::Result<()> {
     std::fs::copy(path, &tmp)?;
     info!("Copied client -> {}", tmp);
 
+    // Expose repo root so the client can locate its scripts dir at runtime.
+    // path = <repo>/target/{profile}/lib*.so  →  3 parents = repo root
+    if let Ok(abs) = std::fs::canonicalize(path) {
+        if let Some(root) = abs.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+            #[allow(deprecated)]
+            std::env::set_var("ANEMOIA_ROOT", root);
+        }
+    }
+
     unload_client();
     load_client(&tmp)?;
 
@@ -167,8 +189,10 @@ fn load_client(path: &str) -> anyhow::Result<()> {
     let lib = unsafe { Library::new(path) }?;
 
     unsafe {
-        if let Ok(init) = lib.get::<Symbol<extern "C" fn()>>(b"initialize_client\0") {
-            init();
+        type InitFn = extern "C" fn(*mut libc::c_void);
+        if let Ok(init) = lib.get::<Symbol<InitFn>>(b"initialize_client\0") {
+            let jvm = SAVED_JVM.load(std::sync::atomic::Ordering::SeqCst) as *mut libc::c_void;
+            init(jvm);
         }
     }
 
@@ -199,14 +223,9 @@ fn get_jvm() -> Option<JavaVM> {
         unsafe extern "C" fn(*mut *mut RawJavaVM, jsize, *mut jsize) -> jint;
 
     unsafe {
-        // The JVM is already in the process — find the symbol from the global namespace.
-        let sym = libc::dlsym(
-            libc::RTLD_DEFAULT,
-            b"JNI_GetCreatedJavaVMs\0".as_ptr() as *const libc::c_char,
-        );
-
+        let sym = find_jni_symbol();
         if sym.is_null() {
-            warn!("JNI_GetCreatedJavaVMs not found via RTLD_DEFAULT");
+            warn!("JNI_GetCreatedJavaVMs not found (RTLD_DEFAULT and libjvm.so both failed)");
             return None;
         }
 
@@ -220,4 +239,37 @@ fn get_jvm() -> Option<JavaVM> {
 
         JavaVM::from_raw(raw).ok()
     }
+}
+
+unsafe fn find_jni_symbol() -> *mut libc::c_void {
+    let name = b"JNI_GetCreatedJavaVMs\0".as_ptr() as *const libc::c_char;
+
+    let sym = libc::dlsym(libc::RTLD_DEFAULT, name);
+    if !sym.is_null() {
+        return sym;
+    }
+
+    let maps = match std::fs::read_to_string("/proc/self/maps") {
+        Ok(m) => m,
+        Err(_) => return std::ptr::null_mut(),
+    };
+
+    for line in maps.lines() {
+        if !line.contains("libjvm.so") {
+            continue;
+        }
+        if let Some(path) = line.split_whitespace().last() {
+            if let Ok(cpath) = std::ffi::CString::new(path) {
+                let handle = libc::dlopen(cpath.as_ptr(), libc::RTLD_LAZY | libc::RTLD_NOLOAD);
+                if !handle.is_null() {
+                    let sym = libc::dlsym(handle, name);
+                    if !sym.is_null() {
+                        return sym;
+                    }
+                }
+            }
+        }
+    }
+
+    std::ptr::null_mut()
 }

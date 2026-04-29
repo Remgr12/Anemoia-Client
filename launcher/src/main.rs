@@ -45,7 +45,6 @@ struct LauncherApp {
 struct ProcessEntry {
     pid: u32,
     label: String,
-    is_minecraft: bool,
 }
 
 impl LauncherApp {
@@ -91,32 +90,38 @@ impl LauncherApp {
                 let cmd = proc
                     .cmd()
                     .iter()
-                    .map(|s| s.to_string_lossy().to_lowercase())
+                    .map(|s| s.to_string_lossy())
                     .collect::<Vec<_>>()
                     .join(" ");
+                let cmd_lower = cmd.to_lowercase();
 
-                if !name.contains("java") && !cmd.contains("minecraft") {
+                // Only actual MC JVM processes: java binary with the minecraft client jar
+                if name != "java" || !cmd_lower.contains("com/mojang/minecraft") {
                     return None;
                 }
 
-                let is_mc = cmd.contains("minecraft");
-                let label = format!(
-                    "{:6}  {}{}",
-                    pid.as_u32(),
-                    proc.name().to_string_lossy(),
-                    if is_mc { "  [Minecraft]" } else { "" },
-                );
+                // Extract version from e.g. "minecraft-26.1.2-client.jar"
+                let version = cmd
+                    .split_whitespace()
+                    .flat_map(|tok| tok.split(':'))
+                    .find(|s| s.contains("minecraft-") && s.ends_with("-client.jar"))
+                    .and_then(|s| s.split("minecraft-").nth(1))
+                    .and_then(|s| s.strip_suffix("-client.jar"))
+                    .unwrap_or("?");
+
+                let label = format!("{:6}  Minecraft {}  (java)", pid.as_u32(), version);
                 Some(ProcessEntry {
                     pid: pid.as_u32(),
                     label,
-                    is_minecraft: is_mc,
                 })
             })
             .collect();
 
-        // Auto-select the Minecraft process if only one is found.
+        // Sort by PID so the list is stable.
+        self.processes.sort_by_key(|p| p.pid);
+
         if self.selected_pid.is_none() {
-            if let Some(mc) = self.processes.iter().find(|p| p.is_minecraft) {
+            if let Some(mc) = self.processes.first() {
                 self.selected_pid = Some(mc.pid);
             }
         }
@@ -232,11 +237,11 @@ impl eframe::App for LauncherApp {
         egui::SidePanel::left("process_panel")
             .min_width(260.0)
             .show(ctx, |ui| {
-                ui.heading("Java Processes");
+                ui.heading("Minecraft Processes");
                 ui.separator();
 
                 if self.processes.is_empty() {
-                    ui.label("No Java processes found.");
+                    ui.label("No Minecraft processes found.");
                 } else {
                     egui::ScrollArea::vertical()
                         .max_height(200.0)

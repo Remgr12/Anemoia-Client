@@ -27,17 +27,27 @@ pub const KEY_F11: i32 = 300;
 pub const KEY_F12: i32 = 301;
 
 const GLFW_PRESS: i32 = 1;
-const GLFW_MOUSE_BUTTON_LEFT: i32 = 0;
 const GLFW_CURSOR: i32 = 0x0003_3001;
 const GLFW_CURSOR_NORMAL: i32 = 0x0003_4001;
 
 // ── Function pointer table ────────────────────────────────────────────────────
 
+pub type CursorPosCallback = extern "C" fn(*mut libc::c_void, f64, f64);
+pub type MouseButtonCallback = extern "C" fn(*mut libc::c_void, i32, i32, i32);
+pub type KeyCallback = extern "C" fn(*mut libc::c_void, i32, i32, i32, i32);
+pub type ScrollCallback = extern "C" fn(*mut libc::c_void, f64, f64);
+pub type CharCallback = extern "C" fn(*mut libc::c_void, u32);
+
 pub struct Glfw {
     get_key: unsafe extern "C" fn(*mut libc::c_void, i32) -> i32,
-    get_mouse_btn: unsafe extern "C" fn(*mut libc::c_void, i32) -> i32,
     get_cursor_pos: unsafe extern "C" fn(*mut libc::c_void, *mut f64, *mut f64),
     set_input_mode: unsafe extern "C" fn(*mut libc::c_void, i32, i32),
+    get_framebuffer_size: unsafe extern "C" fn(*mut libc::c_void, *mut i32, *mut i32),
+    pub set_cursor_pos_cb: unsafe extern "C" fn(*mut libc::c_void, Option<CursorPosCallback>) -> Option<CursorPosCallback>,
+    pub set_mouse_button_cb: unsafe extern "C" fn(*mut libc::c_void, Option<MouseButtonCallback>) -> Option<MouseButtonCallback>,
+    pub set_key_cb: unsafe extern "C" fn(*mut libc::c_void, Option<KeyCallback>) -> Option<KeyCallback>,
+    pub set_scroll_cb: unsafe extern "C" fn(*mut libc::c_void, Option<ScrollCallback>) -> Option<ScrollCallback>,
+    pub set_char_cb: unsafe extern "C" fn(*mut libc::c_void, Option<CharCallback>) -> Option<CharCallback>,
 }
 
 // Safety: glfwGetKey / glfwGetMouseButton are documented as safe to call from
@@ -50,28 +60,26 @@ impl Glfw {
     pub unsafe fn load() -> anyhow::Result<Arc<Self>> {
         macro_rules! sym {
             ($name:literal) => {{
-                let ptr = libc::dlsym(
-                    libc::RTLD_DEFAULT,
-                    concat!($name, "\0").as_ptr() as *const libc::c_char,
-                );
-                anyhow::ensure!(!ptr.is_null(), "GLFW symbol not found: {}", $name);
-                std::mem::transmute(ptr)
+                let ptr = crate::hook::find_sym($name, "libglfw");
+                anyhow::ensure!(ptr.is_some(), "GLFW symbol not found: {}", $name);
+                std::mem::transmute(ptr.unwrap())
             }};
         }
         Ok(Arc::new(Glfw {
             get_key: sym!("glfwGetKey"),
-            get_mouse_btn: sym!("glfwGetMouseButton"),
             get_cursor_pos: sym!("glfwGetCursorPos"),
             set_input_mode: sym!("glfwSetInputMode"),
+            get_framebuffer_size: sym!("glfwGetFramebufferSize"),
+            set_cursor_pos_cb: sym!("glfwSetCursorPosCallback"),
+            set_mouse_button_cb: sym!("glfwSetMouseButtonCallback"),
+            set_key_cb: sym!("glfwSetKeyCallback"),
+            set_scroll_cb: sym!("glfwSetScrollCallback"),
+            set_char_cb: sym!("glfwSetCharCallback"),
         }))
     }
 
     pub fn key_pressed(&self, win: *mut libc::c_void, key: i32) -> bool {
         unsafe { (self.get_key)(win, key) == GLFW_PRESS }
-    }
-
-    pub fn mouse_left_down(&self, win: *mut libc::c_void) -> bool {
-        unsafe { (self.get_mouse_btn)(win, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS }
     }
 
     pub fn cursor_pos(&self, win: *mut libc::c_void) -> (f64, f64) {
@@ -80,8 +88,18 @@ impl Glfw {
         (x, y)
     }
 
+    pub fn framebuffer_size(&self, win: *mut libc::c_void) -> (i32, i32) {
+        let (mut w, mut h) = (0i32, 0i32);
+        unsafe { (self.get_framebuffer_size)(win, &mut w, &mut h) };
+        (w, h)
+    }
+
     pub fn show_cursor(&self, win: *mut libc::c_void) {
         unsafe { (self.set_input_mode)(win, GLFW_CURSOR, GLFW_CURSOR_NORMAL) };
+    }
+
+    pub fn hide_cursor(&self, win: *mut libc::c_void) {
+        unsafe { (self.set_input_mode)(win, GLFW_CURSOR, 0x0003_4003) };
     }
 
     /// Scans the common key range and returns the first key currently held.
