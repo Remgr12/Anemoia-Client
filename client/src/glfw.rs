@@ -30,6 +30,8 @@ const GLFW_PRESS: i32 = 1;
 const GLFW_CURSOR: i32 = 0x0003_3001;
 const GLFW_CURSOR_NORMAL: i32 = 0x0003_4001;
 
+pub const GLFW_FOCUSED: i32 = 0x00020001;
+
 // ── Function pointer table ────────────────────────────────────────────────────
 
 pub type CursorPosCallback = extern "C" fn(*mut libc::c_void, f64, f64);
@@ -43,6 +45,9 @@ pub struct Glfw {
     get_cursor_pos: unsafe extern "C" fn(*mut libc::c_void, *mut f64, *mut f64),
     set_input_mode: unsafe extern "C" fn(*mut libc::c_void, i32, i32),
     get_framebuffer_size: unsafe extern "C" fn(*mut libc::c_void, *mut i32, *mut i32),
+    get_window_attrib: unsafe extern "C" fn(*mut libc::c_void, i32) -> i32,
+    get_clipboard_string: unsafe extern "C" fn(*mut libc::c_void) -> *const libc::c_char,
+    set_clipboard_string: unsafe extern "C" fn(*mut libc::c_void, *const libc::c_char),
     pub set_cursor_pos_cb: unsafe extern "C" fn(*mut libc::c_void, Option<CursorPosCallback>) -> Option<CursorPosCallback>,
     pub set_mouse_button_cb: unsafe extern "C" fn(*mut libc::c_void, Option<MouseButtonCallback>) -> Option<MouseButtonCallback>,
     pub set_key_cb: unsafe extern "C" fn(*mut libc::c_void, Option<KeyCallback>) -> Option<KeyCallback>,
@@ -70,12 +75,35 @@ impl Glfw {
             get_cursor_pos: sym!("glfwGetCursorPos"),
             set_input_mode: sym!("glfwSetInputMode"),
             get_framebuffer_size: sym!("glfwGetFramebufferSize"),
+            get_window_attrib: sym!("glfwGetWindowAttrib"),
+            get_clipboard_string: sym!("glfwGetClipboardString"),
+            set_clipboard_string: sym!("glfwSetClipboardString"),
             set_cursor_pos_cb: sym!("glfwSetCursorPosCallback"),
             set_mouse_button_cb: sym!("glfwSetMouseButtonCallback"),
             set_key_cb: sym!("glfwSetKeyCallback"),
             set_scroll_cb: sym!("glfwSetScrollCallback"),
             set_char_cb: sym!("glfwSetCharCallback"),
         }))
+    }
+
+    pub fn window_focused(&self, win: *mut libc::c_void) -> bool {
+        unsafe { (self.get_window_attrib)(win, GLFW_FOCUSED) != 0 }
+    }
+
+    pub fn get_clipboard(&self, win: *mut libc::c_void) -> Option<String> {
+        let ptr = unsafe { (self.get_clipboard_string)(win) };
+        if ptr.is_null() {
+            None
+        } else {
+            let cstr = unsafe { std::ffi::CStr::from_ptr(ptr) };
+            Some(cstr.to_string_lossy().into_owned())
+        }
+    }
+
+    pub fn set_clipboard(&self, win: *mut libc::c_void, s: &str) {
+        if let Ok(cstr) = std::ffi::CString::new(s) {
+            unsafe { (self.set_clipboard_string)(win, cstr.as_ptr()) };
+        }
     }
 
     pub fn key_pressed(&self, win: *mut libc::c_void, key: i32) -> bool {

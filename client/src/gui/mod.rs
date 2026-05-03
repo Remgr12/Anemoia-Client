@@ -191,6 +191,7 @@ pub struct ClickGui {
     packet_mgr_open: bool,
 
     search_query: String,
+    new_profile_buf: String,
 
     // Zulip connection config buffers (also used in global Settings panel)
     zulip_url_buf: String,
@@ -335,6 +336,7 @@ impl ClickGui {
             script_error: None,
             packet_mgr_open: false,
             search_query: String::new(),
+            new_profile_buf: String::new(),
             zulip_url_buf: String::new(),
             zulip_email_buf: String::new(),
             zulip_key_buf: String::new(),
@@ -349,9 +351,15 @@ impl ClickGui {
     }
 
     fn frame(&mut self) {
+        if self.visible && !self.glfw.window_focused(self.window_ptr) {
+            self.visible = false;
+            GUI_VISIBLE.store(false, Ordering::Relaxed);
+            self.glfw.hide_cursor(self.window_ptr);
+        }
+
         hotkeys::tick(&self.glfw, self.window_ptr);
         self.handle_toggle();
-        
+
         if self.visible {
             self.glfw.show_cursor(self.window_ptr);
         }
@@ -380,13 +388,21 @@ impl ClickGui {
                     vec![]
                 };
                 if let Ok(mut q) = EVENT_QUEUE.try_lock() {
-                    ev.append(&mut q);
+                    for e in q.drain(..) {
+                        if let egui::Event::Key { key: egui::Key::V, pressed: true, modifiers, .. } = &e {
+                            if modifiers.command || modifiers.ctrl {
+                                if let Some(s) = self.glfw.get_clipboard(self.window_ptr) {
+                                    ev.push(egui::Event::Paste(s));
+                                }
+                            }
+                        }
+                        ev.push(e);
+                    }
                 }
                 ev
             },
             ..Default::default()
         };
-
         if self.visible && self.binding {
             if let Some(key) = self.glfw.scan_any_pressed(self.window_ptr) {
                 if let Some((mod_name, setting_name)) = self.binding_module_setting.take() {
@@ -431,6 +447,10 @@ impl ClickGui {
                 }
             }
         });
+
+        if !full_output.platform_output.copied_text.is_empty() {
+            self.glfw.set_clipboard(self.window_ptr, &full_output.platform_output.copied_text);
+        }
 
         let mut last_draw_framebuffer = 0;
         let mut last_read_framebuffer = 0;
@@ -792,6 +812,40 @@ impl ClickGui {
                             }
                         } else if ui.button("Change").clicked() {
                             self.binding = true;
+                        }
+                    });
+                });
+
+                ui.add_space(8.0);
+
+                ui.group(|ui| {
+                    ui.label(egui::RichText::new("Profiles").strong());
+                    let active_profile = crate::config::get_active_profile_name();
+                    let profiles = crate::config::get_profiles();
+                    
+                    ui.horizontal(|ui| {
+                        ui.label("Active Profile:");
+                        egui::ComboBox::from_id_salt("profile_selector")
+                            .selected_text(&active_profile)
+                            .show_ui(ui, |ui| {
+                                for p in profiles {
+                                    if ui.selectable_label(p == active_profile, &p).clicked() {
+                                        crate::config::set_active_profile(&p);
+                                        // Update GUI toggle key since config changed
+                                        self.toggle_key = crate::config::get().gui_toggle_key;
+                                    }
+                                }
+                            });
+                    });
+                    
+                    ui.horizontal(|ui| {
+                        ui.add(egui::TextEdit::singleline(&mut self.new_profile_buf).hint_text("New Profile Name..."));
+                        if ui.button("Create").clicked() {
+                            let name = self.new_profile_buf.trim().to_owned();
+                            if !name.is_empty() {
+                                crate::config::set_active_profile(&name);
+                                self.new_profile_buf.clear();
+                            }
                         }
                     });
                 });

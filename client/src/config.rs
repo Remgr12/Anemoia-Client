@@ -59,16 +59,77 @@ where
     save_to_disk(&lock);
 }
 
-fn config_path() -> PathBuf {
+pub fn get_active_profile_name() -> String {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let path = PathBuf::from(home).join(".anemoia").join("active_profile.txt");
+    match fs::read_to_string(&path) {
+        Ok(s) => {
+            let s = s.trim().to_string();
+            if s.is_empty() { "default".to_string() } else { s }
+        }
+        Err(_) => "default".to_string(),
+    }
+}
+
+pub fn set_active_profile(name: &str) {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let dir = PathBuf::from(home).join(".anemoia");
+    let _ = fs::create_dir_all(&dir);
+    let _ = fs::write(dir.join("active_profile.txt"), name);
+    let container = CONFIG.get_or_init(|| Mutex::new(load_from_disk()));
+    let mut lock = container.lock().unwrap();
+    *lock = load_from_disk();
+}
+
+pub fn get_profiles() -> Vec<String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let dir = PathBuf::from(home).join(".anemoia").join("profiles");
+    let mut profiles = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if let Ok(file_type) = entry.file_type() {
+                if file_type.is_file() {
+                    let path = entry.path();
+                    if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                            profiles.push(stem.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if !profiles.contains(&"default".to_string()) {
+        profiles.push("default".to_string());
+    }
+    profiles.sort();
+    profiles.dedup();
+    profiles
+}
+
+fn migrate_old_config() {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let old_path = PathBuf::from(&home).join(".anemoia").join("config.json");
+    let new_dir = PathBuf::from(&home).join(".anemoia").join("profiles");
+    let new_path = new_dir.join("default.json");
+    if old_path.exists() && !new_path.exists() {
+        let _ = fs::create_dir_all(&new_dir);
+        let _ = fs::rename(old_path, new_path);
+    }
+}
+
+fn config_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let dir = PathBuf::from(home).join(".anemoia").join("profiles");
     if !dir.exists() {
         let _ = fs::create_dir_all(&dir);
     }
-    dir.join("config.json")
+    let profile = get_active_profile_name();
+    dir.join(format!("{}.json", profile))
 }
 
 fn load_from_disk() -> AppConfig {
+    migrate_old_config();
     let path = config_path();
     if !path.exists() {
         return AppConfig::default();
