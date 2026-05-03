@@ -59,7 +59,6 @@ pub fn init() -> Result<()> {
     SCRIPTS.get_or_init(|| Arc::new(Mutex::new(Vec::new())));
     RENDER_CALLBACKS.get_or_init(|| Arc::new(Mutex::new(Vec::new())));
     PACKET_SEND_CALLBACKS.get_or_init(|| Arc::new(Mutex::new(Vec::new())));
-    ZULIP_UI_CALLBACK.get_or_init(|| Arc::new(Mutex::new(None)));
 
     let lua = Lua::new();
     
@@ -82,6 +81,67 @@ pub fn init() -> Result<()> {
     LUA.set(Mutex::new(lua))
         .map_err(|_| anyhow::anyhow!("Lua engine already initialized"))?;
 
+    // Load any extra scripts from config
+    let extra_scripts = crate::config::get().loaded_scripts;
+    for script in extra_scripts {
+        if let Err(e) = load_script_file(&script) {
+            warn!("Failed to load persisted script {}: {}", script, e);
+        }
+    }
+
+    // Apply config settings
+    if let Err(e) = apply_config() {
+        warn!("Failed to apply config to Lua state: {}", e);
+    }
+
+    Ok(())
+}
+
+fn apply_config() -> Result<()> {
+    let guard = LUA.get().unwrap().lock();
+    let cfg = crate::config::get();
+    
+    let anemoia: LuaTable = guard.globals().get("anemoia")?;
+    let list: LuaTable = anemoia.get("_modules")?;
+
+    for i in 1..=list.len()? {
+        let module: LuaTable = list.get(i)?;
+        let name: String = module.get("name")?;
+
+        if let Some(&enabled) = cfg.module_enabled.get(&name) {
+            let was: bool = module.get("enabled").unwrap_or(false);
+            if was != enabled {
+                module.set("enabled", enabled)?;
+                let cb = if enabled { "on_enable" } else { "on_disable" };
+                if let Ok(f) = module.get::<LuaFunction>(cb) {
+                    if let Err(e) = f.call::<()>(module.clone()) {
+                        warn!("{} {} error: {}", name, cb, e);
+                    }
+                }
+            }
+        }
+
+        if let Some(&key) = cfg.module_keys.get(&name) {
+            module.set("key", key)?;
+        }
+
+        if let Some(settings_map) = cfg.module_settings.get(&name) {
+            if let Ok(settings) = module.get::<LuaTable>("settings") {
+                for (k, v) in settings_map {
+                    match v {
+                        serde_json::Value::Bool(b) => { settings.set(k.as_str(), *b)?; }
+                        serde_json::Value::Number(n) => { 
+                            if let Some(f) = n.as_f64() {
+                                settings.set(k.as_str(), f)?;
+                            }
+                        }
+                        serde_json::Value::String(s) => { settings.set(k.as_str(), s.as_str())?; }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -150,7 +210,7 @@ pub fn get_packet_send_callbacks() -> Arc<Mutex<Vec<LuaRegistryKey>>> {
 }
 
 pub fn get_zulip_ui_callback() -> Arc<Mutex<Option<LuaRegistryKey>>> {
-    ZULIP_UI_CALLBACK.get().unwrap().clone()
+    ZULIP_UI_CALLBACK.get_or_init(|| Arc::new(Mutex::new(None))).clone()
 }
 
 pub fn on_packet_send(packet: crate::mc::packet::Packet) -> Result<bool> {
@@ -213,7 +273,7 @@ pub fn on_zulip_ui(painter: egui::Painter) -> Result<()> {
         None => return Ok(()),
     };
 
-    let cb_mutex = ZULIP_UI_CALLBACK.get().unwrap();
+    let cb_mutex = ZULIP_UI_CALLBACK.get_or_init(|| Arc::new(Mutex::new(None)));
     let cb_lock = cb_mutex.lock();
     if let Some(key) = cb_lock.as_ref() {
         let lua_painter = lua_api::render::LuaPainter { painter };
@@ -391,6 +451,7 @@ pub fn set_module_key(module_name: &str, key: i32) {
             }
 
             module.set("key", key)?;
+            crate::config::modify(|c| { c.module_keys.insert(module_name.to_string(), key); });
             break;
         }
         Ok(())

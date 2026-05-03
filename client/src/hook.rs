@@ -78,6 +78,8 @@ fn tick() {
         }
     };
 
+    crate::mc::netty::try_inject(&mut env);
+
     if let Err(e) = lua_engine::on_tick(&mut env) {
         error!("tick: Lua error: {:#}", e);
     }

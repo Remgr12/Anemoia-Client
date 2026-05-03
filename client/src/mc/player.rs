@@ -299,10 +299,26 @@ impl LocalPlayer {
         Ok(env.get_field(&container, "containerId", "I")?.i()?)
     }
 
-    pub fn get_destroy_speed(&self, env: &mut JNIEnv, block_state: &super::world::BlockState) -> Result<f32> {
-        Ok(env.call_method(self.jni_ref.as_obj(), "getDestroySpeed", "(Lnet/minecraft/world/level/block/state/BlockState;)F", &[
-            jni::objects::JValue::Object(block_state.jni_ref.as_obj())
-        ])?.f()?)
+    pub fn display_message(&self, env: &mut JNIEnv, message: &str) -> Result<()> {
+        let component_cls = crate::jvm::Jvm::find_class(env, "net/minecraft/network/chat/Component")?;
+        let msg_jstr = env.new_string(message)?;
+        let component = env.call_static_method(
+            component_cls,
+            "literal",
+            "(Ljava/lang/String;)Lnet/minecraft/network/chat/MutableComponent;",
+            &[jni::objects::JValue::Object(&msg_jstr.into())],
+        )?.l()?;
+
+        env.call_method(
+            self.jni_ref.as_obj(),
+            "displayClientMessage",
+            "(Lnet/minecraft/network/chat/Component;Z)V",
+            &[
+                jni::objects::JValue::Object(&component),
+                jni::objects::JValue::Bool(0),
+            ],
+        )?;
+        Ok(())
     }
 }
 

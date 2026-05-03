@@ -4,7 +4,7 @@
 //! guaranteed to be current.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     ffi::CString,
     sync::{Arc, Mutex, OnceLock},
     sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering},
@@ -185,9 +185,26 @@ pub struct ClickGui {
     scripts_open: bool,
     zulip_open: bool,
     new_script_buf: String,
+    zulip_msg_buf: String,
     script_error: Option<String>,
 
+    packet_mgr_open: bool,
+
     search_query: String,
+
+    // Zulip connection config buffers (also used in global Settings panel)
+    zulip_url_buf: String,
+    zulip_email_buf: String,
+    zulip_key_buf: String,
+    zulip_stream_buf: String,
+    zulip_topic_buf: String,
+
+    // Full Zulip GUI state
+    zulip_in_settings: bool,
+    zulip_selected_stream: String,
+    zulip_selected_topic: String,
+    zulip_expanded_stream: Option<String>,
+    zulip_texture_cache: HashMap<String, egui::TextureHandle>,
 }
 
 // Safety: only ever accessed from the render thread (glXSwapBuffers hook).
@@ -314,25 +331,40 @@ impl ClickGui {
             scripts_open: false,
             zulip_open: false,
             new_script_buf: String::new(),
+            zulip_msg_buf: String::new(),
             script_error: None,
+            packet_mgr_open: false,
             search_query: String::new(),
+            zulip_url_buf: String::new(),
+            zulip_email_buf: String::new(),
+            zulip_key_buf: String::new(),
+            zulip_stream_buf: String::new(),
+            zulip_topic_buf: String::new(),
+            zulip_in_settings: false,
+            zulip_selected_stream: String::new(),
+            zulip_selected_topic: String::new(),
+            zulip_expanded_stream: None,
+            zulip_texture_cache: HashMap::new(),
         })
     }
 
     fn frame(&mut self) {
         hotkeys::tick(&self.glfw, self.window_ptr);
         self.handle_toggle();
-        if !self.visible {
-            return;
+        
+        if self.visible {
+            self.glfw.show_cursor(self.window_ptr);
         }
-
-        self.glfw.show_cursor(self.window_ptr);
 
         let (fw, fh) = self.glfw.framebuffer_size(self.window_ptr);
         let w = fw.max(1) as f32;
         let h = fh.max(1) as f32;
 
-        let (mx, my) = self.glfw.cursor_pos(self.window_ptr);
+        let (mx, my) = if self.visible {
+            self.glfw.cursor_pos(self.window_ptr)
+        } else {
+            (-1000.0, -1000.0) // Keep mouse away when not visible
+        };
 
         let raw_input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -342,7 +374,11 @@ impl ClickGui {
             time: Some(self.start_time.elapsed().as_secs_f64()),
             predicted_dt: 1.0 / 60.0,
             events: {
-                let mut ev = vec![egui::Event::PointerMoved(egui::pos2(mx as f32, my as f32))];
+                let mut ev = if self.visible {
+                    vec![egui::Event::PointerMoved(egui::pos2(mx as f32, my as f32))]
+                } else {
+                    vec![]
+                };
                 if let Ok(mut q) = EVENT_QUEUE.try_lock() {
                     ev.append(&mut q);
                 }
@@ -351,7 +387,7 @@ impl ClickGui {
             ..Default::default()
         };
 
-        if self.binding {
+        if self.visible && self.binding {
             if let Some(key) = self.glfw.scan_any_pressed(self.window_ptr) {
                 if let Some((mod_name, setting_name)) = self.binding_module_setting.take() {
                     lua_engine::set_module_setting(&mod_name, &setting_name, mlua::Value::Integer(key.into()));
@@ -359,10 +395,13 @@ impl ClickGui {
                     lua_engine::set_module_key(&mod_name, key);
                 } else {
                     self.toggle_key = key;
+                    crate::config::modify(|c| c.gui_toggle_key = key);
                 }
                 self.binding = false;
             }
         }
+
+        self.maybe_reflect_selected();
 
         let modules = lua_engine::get_module_list();
         let categories = group_by_category(modules);
@@ -375,16 +414,21 @@ impl ClickGui {
                 error!("on_render error: {:#}", e);
             }
 
-            self.draw_top_bar(ctx);
-            self.draw_modules(ctx, &categories);
-            if self.settings_open {
-                self.draw_settings(ctx);
-            }
-            if self.scripts_open {
-                self.draw_scripts(ctx);
-            }
-            if self.zulip_open {
-                self.draw_zulip(ctx);
+            if self.visible {
+                self.draw_top_bar(ctx);
+                self.draw_modules(ctx, &categories);
+                if self.settings_open {
+                    self.draw_settings(ctx);
+                }
+                if self.scripts_open {
+                    self.draw_scripts(ctx);
+                }
+                if self.zulip_open {
+                    self.draw_zulip(ctx);
+                }
+                if self.packet_mgr_open {
+                    self.draw_packet_mgr(ctx);
+                }
             }
         });
 
@@ -510,32 +554,21 @@ impl ClickGui {
     }
 
     fn handle_toggle(&mut self) {
-        let mut env = match Jvm::get().attach() {
-            Ok(e) => e,
-            Err(_) => return,
-        };
-
-        // Close if a Minecraft screen (like Esc menu) is opened
-        if self.visible {
-            if let Ok(Some(mc_obj)) = Minecraft::get_instance(&mut env) {
-                if let Ok(Some(_)) = mc_obj.get_current_screen(&mut env) {
-                    self.visible = false;
-                    GUI_VISIBLE.store(false, Ordering::Relaxed);
-                    self.glfw.hide_cursor(self.window_ptr);
-                }
-            }
-        }
-
         let pressed = self.glfw.key_pressed(self.window_ptr, self.toggle_key);
         if pressed && !self.prev_toggle_state {
             self.visible = !self.visible;
             GUI_VISIBLE.store(self.visible, Ordering::Relaxed);
             if !self.visible {
-                // Restore hidden cursor
                 self.glfw.hide_cursor(self.window_ptr);
             }
         }
         self.prev_toggle_state = pressed;
+
+        if self.visible && self.ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.visible = false;
+            GUI_VISIBLE.store(false, Ordering::Relaxed);
+            self.glfw.hide_cursor(self.window_ptr);
+        }
     }
 
     // ── UI ────────────────────────────────────────────────────────────────────
@@ -700,12 +733,23 @@ impl ClickGui {
                 ui.separator();
                 if ui.button("Settings").clicked() {
                     self.settings_open = !self.settings_open;
+                    if self.settings_open {
+                        let cfg = crate::zulip::get_config();
+                        self.zulip_url_buf = cfg.url;
+                        self.zulip_email_buf = cfg.email;
+                        self.zulip_key_buf = cfg.api_key;
+                        self.zulip_stream_buf = cfg.stream;
+                        self.zulip_topic_buf = cfg.topic;
+                    }
                 }
                 if ui.button("Scripts").clicked() {
                     self.scripts_open = !self.scripts_open;
                 }
                 if ui.button("Zulip").clicked() {
                     self.zulip_open = !self.zulip_open;
+                }
+                if ui.button("Packets").clicked() {
+                    self.packet_mgr_open = !self.packet_mgr_open;
                 }
                 ui.separator();
                 ui.label("Search:");
@@ -730,12 +774,14 @@ impl ClickGui {
 
     fn draw_settings(&mut self, ctx: &Context) {
         let mut open = self.settings_open;
+
         egui::Window::new("Settings")
             .id(egui::Id::new("anemoia_settings"))
             .open(&mut open)
             .resizable(false)
             .show(ctx, |ui| {
                 ui.group(|ui| {
+                    ui.label(egui::RichText::new("General").strong());
                     ui.label("GUI toggle key");
                     ui.horizontal(|ui| {
                         ui.label(glfw::key_name(self.toggle_key));
@@ -749,6 +795,48 @@ impl ClickGui {
                         }
                     });
                 });
+
+                ui.add_space(8.0);
+
+                ui.group(|ui| {
+                    ui.label(egui::RichText::new("Zulip Configuration").strong());
+                    egui::Grid::new("zulip_grid")
+                        .num_columns(2)
+                        .spacing([10.0, 10.0])
+                        .show(ui, |ui| {
+                            ui.label("URL:");
+                            ui.text_edit_singleline(&mut self.zulip_url_buf);
+                            ui.end_row();
+
+                            ui.label("Email:");
+                            ui.text_edit_singleline(&mut self.zulip_email_buf);
+                            ui.end_row();
+
+                            ui.label("API Key:");
+                            ui.text_edit_singleline(&mut self.zulip_key_buf);
+                            ui.end_row();
+
+                            ui.label("Stream:");
+                            ui.text_edit_singleline(&mut self.zulip_stream_buf);
+                            ui.end_row();
+
+                            ui.label("Topic:");
+                            ui.text_edit_singleline(&mut self.zulip_topic_buf);
+                            ui.end_row();
+                        });
+
+                    ui.add_space(4.0);
+                    if ui.button("Apply Zulip Settings").clicked() {
+                        let mut cfg = crate::zulip::get_config();
+                        cfg.url = self.zulip_url_buf.trim().to_owned();
+                        cfg.email = self.zulip_email_buf.trim().to_owned();
+                        cfg.api_key = self.zulip_key_buf.trim().to_owned();
+                        cfg.stream = self.zulip_stream_buf.trim().to_owned();
+                        cfg.topic = self.zulip_topic_buf.trim().to_owned();
+                        crate::zulip::set_config(cfg);
+                    }
+                });
+
                 ui.add_space(4.0);
                 ui.label(
                     egui::RichText::new(
@@ -758,6 +846,7 @@ impl ClickGui {
                     .small(),
                 );
             });
+        
         self.settings_open = open;
     }
 
@@ -814,23 +903,580 @@ impl ClickGui {
     }
 
     fn draw_zulip(&mut self, ctx: &Context) {
+        // Upload any decoded images from background threads to GPU textures.
+        for (url, decoded) in crate::zulip::take_decoded_images() {
+            let color_img = egui::ColorImage::from_rgba_unmultiplied(
+                [decoded.width, decoded.height],
+                &decoded.pixels,
+            );
+            let handle = ctx.load_texture(&url, color_img, Default::default());
+            self.zulip_texture_cache.insert(url, handle);
+        }
+
+        let cfg = crate::zulip::get_config();
+
+        // Trigger channel load if enabled and not yet loaded.
+        if cfg.enabled && !cfg.url.is_empty() {
+            crate::zulip::fetch_channels();
+        }
+
+        let channels = crate::zulip::get_channels();
+        let channels_loaded = crate::zulip::channels_loaded();
+        let sel_stream = self.zulip_selected_stream.clone();
+        let sel_topic = self.zulip_selected_topic.clone();
+
+        // Get messages for current selection.
+        let messages: Vec<crate::zulip::ZulipMessage> = if !sel_stream.is_empty() && !sel_topic.is_empty() {
+            crate::zulip::fetch_channel_messages(sel_stream.clone(), sel_topic.clone());
+            crate::zulip::get_channel_messages(&sel_stream, &sel_topic).unwrap_or_default()
+        } else if !sel_stream.is_empty() {
+            crate::zulip::get_stream_messages(&sel_stream)
+        } else {
+            vec![]
+        };
+        let is_loading = !sel_topic.is_empty() && crate::zulip::is_channel_loading(&sel_stream, &sel_topic);
+
+        // Kick off image fetches for visible messages.
+        for msg in &messages {
+            for url in &msg.image_urls {
+                crate::zulip::fetch_image(url.clone());
+            }
+        }
+
+        // Collect UI events into locals; apply after closure.
+        let mut new_stream: Option<String> = None;
+        let mut new_topic: Option<String> = None;
+        let mut new_expanded: Option<Option<String>> = None;
+        let mut fetch_topics_sid: Option<u64> = None;
+        let mut do_toggle_settings = false;
+        let mut do_apply_settings = false;
+        let mut do_reset_channels = false;
+        let mut send_msg: Option<(String, String, String)> = None;
+        let mut set_enabled: Option<bool> = None;
         let mut open = self.zulip_open;
-        egui::Window::new("Zulip Bridge")
+
+        egui::Window::new("Zulip")
             .id(egui::Id::new("anemoia_zulip"))
             .open(&mut open)
-            .min_width(400.0)
+            .min_size([720.0, 460.0])
             .resizable(true)
             .show(ctx, |ui| {
-                let painter = ui.painter().clone();
-                if let Err(e) = lua_engine::on_zulip_ui(painter) {
-                    error!("on_zulip_ui error: {:#}", e);
+                // ── Top bar ──────────────────────────────────────────────────
+                ui.horizontal(|ui| {
+                    if cfg.enabled {
+                        ui.colored_label(egui::Color32::from_rgb(100, 220, 100), "● Live");
+                    } else {
+                        ui.colored_label(egui::Color32::from_rgb(160, 160, 160), "○ Offline");
+                    }
+                    ui.separator();
+                    let settings_label = if self.zulip_in_settings { "✕ Settings" } else { "⚙ Settings" };
+                    if ui.small_button(settings_label).clicked() {
+                        do_toggle_settings = true;
+                    }
+                    if !self.zulip_in_settings {
+                        if ui.small_button("↺").on_hover_text("Refresh channels").clicked() {
+                            do_reset_channels = true;
+                        }
+                    }
+                });
+                ui.separator();
+
+                // ── Settings panel ───────────────────────────────────────────
+                if self.zulip_in_settings {
+                    egui::Grid::new("zulip_cfg")
+                        .num_columns(2)
+                        .spacing([10.0, 6.0])
+                        .show(ui, |ui| {
+                            ui.label("Server URL:");
+                            ui.add(egui::TextEdit::singleline(&mut self.zulip_url_buf).desired_width(280.0));
+                            ui.end_row();
+                            ui.label("Email:");
+                            ui.add(egui::TextEdit::singleline(&mut self.zulip_email_buf).desired_width(280.0));
+                            ui.end_row();
+                            ui.label("API Key:");
+                            ui.add(egui::TextEdit::singleline(&mut self.zulip_key_buf).password(true).desired_width(280.0));
+                            ui.end_row();
+                            ui.label("Default Stream:");
+                            ui.add(egui::TextEdit::singleline(&mut self.zulip_stream_buf).desired_width(280.0));
+                            ui.end_row();
+                            ui.label("Default Topic:");
+                            ui.add(egui::TextEdit::singleline(&mut self.zulip_topic_buf).desired_width(280.0));
+                            ui.end_row();
+                        });
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Apply").clicked() { do_apply_settings = true; }
+                        if ui.button("Cancel").clicked() { do_toggle_settings = true; }
+                        ui.separator();
+                        if cfg.enabled {
+                            if ui.button("Disable Bridge").clicked() { set_enabled = Some(false); }
+                        } else {
+                            if ui.button("Enable Bridge").clicked() { set_enabled = Some(true); }
+                        }
+                    });
+                    return;
                 }
+
+                // ── Main layout: sidebar + message area ───────────────────────
+                ui.horizontal_top(|ui| {
+                    // Left: channel list
+                    ui.vertical(|ui| {
+                        ui.set_width(185.0);
+                        if !channels_loaded {
+                            if crate::zulip::channels_loading() {
+                                ui.horizontal(|ui| { ui.spinner(); ui.label("Loading..."); });
+                            } else {
+                                ui.label(
+                                    egui::RichText::new("Configure server\ncredentials in ⚙ Settings")
+                                        .weak()
+                                        .small(),
+                                );
+                            }
+                        } else {
+                            egui::ScrollArea::vertical()
+                                .id_salt("zulip_ch_list")
+                                .max_height(370.0)
+                                .show(ui, |ui| {
+                                    for ch in &channels {
+                                        let is_exp = self.zulip_expanded_stream.as_deref() == Some(ch.name.as_str());
+                                        let stream_active = sel_stream == ch.name;
+
+                                        ui.horizontal(|ui| {
+                                            let icon = if is_exp { "▼" } else { "▶" };
+                                            if ui.small_button(icon).clicked() {
+                                                if is_exp {
+                                                    new_expanded = Some(None);
+                                                } else {
+                                                    new_expanded = Some(Some(ch.name.clone()));
+                                                    fetch_topics_sid = Some(ch.stream_id);
+                                                }
+                                            }
+                                            let col = if stream_active && sel_topic.is_empty() {
+                                                egui::Color32::from_rgb(120, 190, 255)
+                                            } else {
+                                                egui::Color32::GRAY
+                                            };
+                                            let lbl = egui::RichText::new(format!("#{}", ch.name)).small().color(col);
+                                            if ui.selectable_label(stream_active && sel_topic.is_empty(), lbl).clicked() {
+                                                new_stream = Some(ch.name.clone());
+                                                new_topic = Some(String::new());
+                                            }
+                                        });
+
+                                        if is_exp {
+                                            if !ch.topics_loaded {
+                                                ui.horizontal(|ui| {
+                                                    ui.add_space(18.0);
+                                                    ui.spinner();
+                                                });
+                                            } else if ch.topics.is_empty() {
+                                                ui.horizontal(|ui| {
+                                                    ui.add_space(18.0);
+                                                    ui.label(egui::RichText::new("(no topics)").small().weak());
+                                                });
+                                            } else {
+                                                for topic in &ch.topics {
+                                                    let selected = sel_stream == ch.name && sel_topic == *topic;
+                                                    ui.horizontal(|ui| {
+                                                        ui.add_space(18.0);
+                                                        let lbl = egui::RichText::new(topic).small();
+                                                        if ui.selectable_label(selected, lbl).clicked() {
+                                                            new_stream = Some(ch.name.clone());
+                                                            new_topic = Some(topic.clone());
+                                                        }
+                                                    });
+                                                }
+                                            }
+                                        }
+                                    }
+                                });
+                        }
+                    });
+
+                    ui.separator();
+
+                    // Right: message area
+                    ui.vertical(|ui| {
+                        if sel_stream.is_empty() {
+                            ui.add_space(60.0);
+                            ui.label(egui::RichText::new("← Select a channel").weak());
+                            return;
+                        }
+
+                        // Header
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(format!("#{}", sel_stream)).strong());
+                            if !sel_topic.is_empty() {
+                                ui.label(egui::RichText::new(format!(" › {}", sel_topic)).weak());
+                            }
+                        });
+                        ui.separator();
+
+                        if is_loading {
+                            ui.horizontal(|ui| { ui.spinner(); ui.label("Loading history..."); });
+                        }
+
+                        // Determine how much height to give the scroll area.
+                        let compose_height = if sel_topic.is_empty() { 50.0 } else { 28.0 };
+                        let msg_height = (ui.available_height() - compose_height).max(80.0);
+
+                        egui::ScrollArea::vertical()
+                            .id_salt("zulip_msgs")
+                            .max_height(msg_height)
+                            .stick_to_bottom(true)
+                            .show(ui, |ui| {
+                                for msg in &messages {
+                                    // Sender line
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!("[{}]", msg.time))
+                                                .small()
+                                                .weak(),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(&msg.sender)
+                                                .small()
+                                                .strong()
+                                                .color(egui::Color32::from_rgb(120, 200, 120)),
+                                        );
+                                    });
+
+                                    // Content (strip markdown image syntax)
+                                    let text = zulip_strip_md(&msg.content);
+                                    let display = if text.len() > 600 {
+                                        format!("{}…", &text[..600])
+                                    } else {
+                                        text
+                                    };
+                                    ui.label(egui::RichText::new(&display).small());
+
+                                    // Inline images
+                                    for img_url in &msg.image_urls {
+                                        if let Some(handle) = self.zulip_texture_cache.get(img_url) {
+                                            let tex_sz = handle.size_vec2();
+                                            let max_px = 128.0_f32;
+                                            let scale = (max_px / tex_sz.x.max(tex_sz.y)).min(1.0);
+                                            let draw_sz = tex_sz * scale;
+                                            let (rect, _) = ui.allocate_exact_size(draw_sz, egui::Sense::hover());
+                                            ui.painter().image(
+                                                handle.id(),
+                                                rect,
+                                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                                egui::Color32::WHITE,
+                                            );
+                                        } else {
+                                            match crate::zulip::get_image(img_url) {
+                                                Some(crate::zulip::CachedImage::Loading) => { ui.spinner(); }
+                                                Some(crate::zulip::CachedImage::Failed) => {
+                                                    ui.label(egui::RichText::new("[img]").weak().small());
+                                                }
+                                                _ => { ui.spinner(); }
+                                            }
+                                        }
+                                    }
+
+                                    ui.add_space(2.0);
+                                }
+                            });
+
+                        ui.separator();
+
+                        // Topic input (only when viewing stream root, not a specific topic)
+                        if sel_topic.is_empty() {
+                            ui.horizontal(|ui| {
+                                ui.label("Topic:");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.zulip_topic_buf)
+                                        .desired_width(180.0)
+                                        .hint_text("topic name"),
+                                );
+                            });
+                        }
+
+                        // Compose row
+                        ui.horizontal(|ui| {
+                            let avail = ui.available_width() - 58.0;
+                            let resp = ui.add(
+                                egui::TextEdit::singleline(&mut self.zulip_msg_buf)
+                                    .desired_width(avail)
+                                    .hint_text("Message…"),
+                            );
+                            let do_send = (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                                || ui.button("Send").clicked();
+                            if do_send {
+                                let content = self.zulip_msg_buf.trim().to_owned();
+                                let topic = if sel_topic.is_empty() {
+                                    self.zulip_topic_buf.trim().to_owned()
+                                } else {
+                                    sel_topic.clone()
+                                };
+                                if !content.is_empty() && !topic.is_empty() {
+                                    send_msg = Some((sel_stream.clone(), topic, content));
+                                }
+                            }
+                        });
+                    });
+                });
             });
+
         self.zulip_open = open;
+
+        // ── Apply collected mutations ──────────────────────────────────────────
+        if let Some(s) = new_stream {
+            self.zulip_selected_stream = s;
+        }
+        if let Some(t) = new_topic {
+            self.zulip_selected_topic = t;
+        }
+        if let Some(exp) = new_expanded {
+            self.zulip_expanded_stream = exp;
+        }
+        if let Some(sid) = fetch_topics_sid {
+            crate::zulip::fetch_topics(sid);
+        }
+        if do_toggle_settings {
+            self.zulip_in_settings = !self.zulip_in_settings;
+            if self.zulip_in_settings {
+                let c = crate::zulip::get_config();
+                self.zulip_url_buf    = c.url;
+                self.zulip_email_buf  = c.email;
+                self.zulip_key_buf    = c.api_key;
+                self.zulip_stream_buf = c.stream;
+                self.zulip_topic_buf  = c.topic;
+            }
+        }
+        if do_apply_settings {
+            let mut c = crate::zulip::get_config();
+            c.url     = self.zulip_url_buf.trim().to_owned();
+            c.email   = self.zulip_email_buf.trim().to_owned();
+            c.api_key = self.zulip_key_buf.trim().to_owned();
+            c.stream  = self.zulip_stream_buf.trim().to_owned();
+            c.topic   = self.zulip_topic_buf.trim().to_owned();
+            crate::zulip::set_config(c);
+            crate::zulip::reset_channels();
+            crate::zulip::fetch_channels();
+            self.zulip_in_settings = false;
+        }
+        if do_reset_channels {
+            crate::zulip::reset_channels();
+            crate::zulip::fetch_channels();
+        }
+        if let Some((stream, topic, content)) = send_msg {
+            crate::zulip::send_to(stream, topic, content);
+            self.zulip_msg_buf.clear();
+        }
+        if let Some(enabled) = set_enabled {
+            let mut c = crate::zulip::get_config();
+            c.enabled = enabled;
+            crate::zulip::set_config(c);
+        }
+    }
+
+    // ── Packet Manager ────────────────────────────────────────────────────────
+
+    fn draw_packet_mgr(&mut self, ctx: &Context) {
+        use crate::packet_capture::{self, Direction};
+
+        let cap_arc = packet_capture::get();
+
+        struct PktItem {
+            id: u64,
+            elapsed: f64,
+            dir: Direction,
+            short: String,
+            cancelled: bool,
+        }
+
+        // Collect state under a single lock, then release before drawing.
+        let (mut enabled, mut paused, mut show_out, mut show_in, mut search, items, selected_id, sel_type, sel_dir, sel_elapsed, sel_cancelled, sel_fields) = {
+            let cap = cap_arc.lock().unwrap();
+            let ids = cap.visible_ids();
+            let items: Vec<PktItem> = ids.iter().filter_map(|&id| {
+                cap.get(id).map(|p| PktItem {
+                    id,
+                    elapsed: p.elapsed,
+                    dir: p.direction,
+                    short: packet_capture::short_name(&p.type_name),
+                    cancelled: p.cancelled,
+                })
+            }).collect();
+            let sel = cap.selected_id;
+            let sel_type  = sel.and_then(|id| cap.get(id)).map(|p| p.type_name.clone());
+            let sel_dir   = sel.and_then(|id| cap.get(id)).map(|p| p.direction);
+            let sel_el    = sel.and_then(|id| cap.get(id)).map(|p| p.elapsed);
+            let sel_canc  = sel.and_then(|id| cap.get(id)).map(|p| p.cancelled).unwrap_or(false);
+            let sel_fields = sel.and_then(|id| cap.get(id)).and_then(|p| p.fields.clone());
+            (cap.enabled, cap.paused, cap.show_out, cap.show_in, cap.search.clone(),
+             items, sel, sel_type, sel_dir, sel_el, sel_canc, sel_fields)
+        };
+
+        let mut do_clear = false;
+        let mut clicked_id: Option<u64> = None;
+        let mut open = self.packet_mgr_open;
+
+        egui::Window::new("Packet Capture")
+            .id(egui::Id::new("anemoia_packets"))
+            .open(&mut open)
+            .min_size([620.0, 400.0])
+            .resizable(true)
+            .show(ctx, |ui| {
+                // Controls
+                ui.horizontal(|ui| {
+                    if ui.selectable_label(enabled, "Capture").clicked() { enabled = !enabled; }
+                    if ui.selectable_label(paused, "Pause").clicked() { paused = !paused; }
+                    if ui.button("Clear").clicked() { do_clear = true; }
+                    ui.separator();
+                    if ui.selectable_label(show_out, "OUT").clicked() { show_out = !show_out; }
+                    if ui.selectable_label(show_in, "IN").clicked() { show_in = !show_in; }
+                    ui.separator();
+                    ui.label("Search:");
+                    ui.text_edit_singleline(&mut search);
+                    ui.label(format!("{} pkts", items.len()));
+                });
+
+                ui.separator();
+
+                ui.columns(2, |cols| {
+                    // Left: packet list
+                    egui::ScrollArea::vertical()
+                        .id_salt("pkt_list")
+                        .max_height(340.0)
+                        .show(&mut cols[0], |ui| {
+                            for item in &items {
+                                let arrow = if item.dir == Direction::Out { "→" } else { "←" };
+                                let canc  = if item.cancelled { " ✗" } else { "" };
+                                let label = format!("{:.3}s {} {}{}", item.elapsed, arrow, item.short, canc);
+                                let color = if item.dir == Direction::Out {
+                                    egui::Color32::from_rgb(220, 200, 100)
+                                } else {
+                                    egui::Color32::from_rgb(100, 200, 220)
+                                };
+                                let rich = egui::RichText::new(&label).color(color).monospace().small();
+                                if ui.selectable_label(selected_id == Some(item.id), rich).clicked() {
+                                    clicked_id = Some(item.id);
+                                }
+                            }
+                        });
+
+                    // Right: field details
+                    if let (Some(type_name), Some(dir), Some(elapsed)) = (&sel_type, sel_dir, sel_elapsed) {
+                        cols[1].label(egui::RichText::new(packet_capture::short_name(type_name)).strong());
+                        cols[1].label(egui::RichText::new(type_name.as_str()).small().weak());
+                        cols[1].label(format!("{:?}  t={:.3}s", dir, elapsed));
+                        if sel_cancelled {
+                            cols[1].colored_label(egui::Color32::YELLOW, "CANCELLED (blocked by Lua)");
+                        }
+                        cols[1].separator();
+                        match &sel_fields {
+                            Some(fields) => {
+                                egui::ScrollArea::vertical()
+                                    .id_salt("pkt_fields")
+                                    .max_height(300.0)
+                                    .show(&mut cols[1], |ui| {
+                                        for (fname, fval) in fields {
+                                            ui.horizontal_wrapped(|ui| {
+                                                ui.label(egui::RichText::new(fname).strong().small());
+                                                ui.label(egui::RichText::new(fval).small().weak());
+                                            });
+                                        }
+                                    });
+                            }
+                            None => {
+                                cols[1].label(egui::RichText::new("Reflecting…").weak());
+                            }
+                        }
+                    } else {
+                        cols[1].label(egui::RichText::new("Select a packet to inspect.").weak());
+                    }
+                });
+            });
+
+        // Apply control changes
+        {
+            let mut cap = cap_arc.lock().unwrap();
+            cap.enabled  = enabled;
+            cap.paused   = paused;
+            cap.show_out = show_out;
+            cap.show_in  = show_in;
+            cap.search   = search;
+            if do_clear { cap.clear(); }
+            if let Some(id) = clicked_id {
+                cap.selected_id = Some(id);
+                // Clear cached fields so reflection is re-triggered
+                if let Some(pkt) = cap.get_mut(id) {
+                    if pkt.fields.is_none() {
+                        // already None — reflection will happen next frame
+                    }
+                }
+            }
+        }
+
+        self.packet_mgr_open = open;
+    }
+
+    fn maybe_reflect_selected(&mut self) {
+        let cap_arc = crate::packet_capture::get();
+
+        // Check if reflection is needed without holding the lock long.
+        let (sel_id, raw) = {
+            let cap = match cap_arc.try_lock() {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            let id = match cap.selected_id { Some(id) => id, None => return };
+            let raw = match cap.get(id) {
+                Some(p) if p.fields.is_none() => p.raw.as_obj().as_raw(),
+                _ => return,
+            };
+            (id, raw)
+        };
+
+        let jvm = crate::jvm::Jvm::get();
+        let mut env = match jvm.attach() {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+
+        let fields = crate::mc::reflect::reflect_fields(&mut env, raw)
+            .unwrap_or_else(|e| vec![("<error>".into(), e.to_string())]);
+
+        let mut cap = match cap_arc.try_lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        if let Some(pkt) = cap.get_mut(sel_id) {
+            pkt.fields = Some(fields);
+        }
     }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn zulip_strip_md(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        // Skip markdown image syntax: ![alt](url)
+        if i + 1 < len && bytes[i] == b'!' && bytes[i + 1] == b'[' {
+            let mut depth = 0i32;
+            let mut j = i + 2;
+            while j < len {
+                if bytes[j] == b'(' { depth += 1; }
+                if bytes[j] == b')' {
+                    if depth > 0 { depth -= 1; } else { j += 1; break; }
+                }
+                j += 1;
+            }
+            i = j;
+            continue;
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
 
 fn group_by_category(modules: Vec<ModuleInfo>) -> BTreeMap<String, Vec<ModuleInfo>> {
     let mut map: BTreeMap<String, Vec<ModuleInfo>> = BTreeMap::new();

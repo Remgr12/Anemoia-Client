@@ -42,8 +42,16 @@ impl Jvm {
     ///
     /// Safe for LWJGL3's render thread: the glXSwapBuffers callsite is native,
     /// so the calling thread is a non-Java thread and daemon attachment is safe.
+    ///
+    /// Also clears any pending Java exception left by a previous JNI call on this
+    /// thread. The JNI spec forbids calling most JNI functions while an exception
+    /// is pending; clearing here gives every caller a clean env unconditionally.
     pub fn attach(&self) -> Result<jni::JNIEnv<'_>> {
-        Ok(self.inner.attach_current_thread_as_daemon()?)
+        let env = self.inner.attach_current_thread_as_daemon()?;
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_clear();
+        }
+        Ok(env)
     }
 
     /// Finds a class. If `env.find_class` fails (e.g. because we are in a native hook

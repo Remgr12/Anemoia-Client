@@ -6,46 +6,45 @@ use crate::{
     mc::{
         minecraft::Minecraft,
         player::LocalPlayer,
-        world::{self, LuaEntity, LuaHitResult},
+        world::{self, LuaHitResult},
     },
 };
 
-pub struct LuaBlock(pub Arc<world::BlockState>);
+// ── LuaBlock ──────────────────────────────────────────────────────────────────
+// Holds a pre-fetched type_id string. No JNI required after construction.
+
+pub struct LuaBlock(pub String);
 
 impl LuaUserData for LuaBlock {
     fn add_methods<M: LuaUserDataMethods<Self>>(m: &mut M) {
-        m.add_method("type_id", |_, this, ()| with_env(|env| this.0.type_id(env)));
+        m.add_method("type_id", |_, this, ()| Ok(this.0.clone()));
     }
 }
 
 // ── LuaEntity UserData ────────────────────────────────────────────────────────
+// EntitySnapshot holds all entity data — no JNI calls needed for any method.
 
 impl LuaUserData for world::LuaEntity {
     fn add_methods<M: LuaUserDataMethods<Self>>(m: &mut M) {
-        m.add_method("x", |_, this, ()| with_env(|env| this.0.get_x(env)));
-        m.add_method("y", |_, this, ()| with_env(|env| this.0.get_y(env)));
-        m.add_method("z", |_, this, ()| with_env(|env| this.0.get_z(env)));
-        m.add_method("yaw", |_, this, ()| with_env(|env| this.0.get_yaw(env)));
-        m.add_method("pitch", |_, this, ()| with_env(|env| this.0.get_pitch(env)));
-        m.add_method("alive", |_, this, ()| with_env(|env| this.0.is_alive(env)));
-        m.add_method("type_id", |_, this, ()| with_env(|env| this.0.type_id(env)));
-        m.add_method("name", |_, this, ()| with_env(|env| this.0.get_name(env)));
-        m.add_method("is_local_player", |_, this, ()| {
-            with_env(|env| this.0.is_local_player(env))
+        m.add_method("x",              |_, this, ()| Ok(this.0.x));
+        m.add_method("y",              |_, this, ()| Ok(this.0.y));
+        m.add_method("z",              |_, this, ()| Ok(this.0.z));
+        m.add_method("yaw",            |_, this, ()| Ok(this.0.yaw));
+        m.add_method("pitch",          |_, this, ()| Ok(this.0.pitch));
+        m.add_method("alive",          |_, this, ()| Ok(this.0.alive));
+        m.add_method("type_id",        |_, this, ()| Ok(this.0.type_id.clone()));
+        m.add_method("name",           |_, this, ()| Ok(this.0.name.clone()));
+        m.add_method("is_local_player",|_, this, ()| Ok(this.0.is_local_player));
+        m.add_method("dist_sq", |_, this, (ox, oy, oz): (f64, f64, f64)| {
+            let dx = this.0.x - ox;
+            let dy = this.0.y - oy;
+            let dz = this.0.z - oz;
+            Ok(dx * dx + dy * dy + dz * dz)
         });
-        m.add_method(
-            "dist_sq",
-            |_, this, (ox, oy, oz): (f64, f64, f64)| {
-                with_env(|env| {
-                    let x = this.0.get_x(env)?;
-                    let y = this.0.get_y(env)?;
-                    let z = this.0.get_z(env)?;
-                    Ok((x - ox).powi(2) + (y - oy).powi(2) + (z - oz).powi(2))
-                })
-            },
-        );
     }
 }
+
+// ── LuaHitResult UserData ─────────────────────────────────────────────────────
 
 impl LuaUserData for LuaHitResult {
     fn add_methods<M: LuaUserDataMethods<Self>>(m: &mut M) {
@@ -53,7 +52,9 @@ impl LuaUserData for LuaHitResult {
         m.add_method("entity", |lua, this, ()| {
             let entity = with_env(|env| this.0.get_entity(env))?;
             match entity {
-                Some(e) => Ok(LuaValue::UserData(lua.create_userdata(LuaEntity(Arc::new(e)))?)),
+                Some(snap) => Ok(LuaValue::UserData(
+                    lua.create_userdata(world::LuaEntity(snap))?,
+                )),
                 None => Ok(LuaValue::Nil),
             }
         });
@@ -66,40 +67,32 @@ pub fn register(lua: &Lua, mc_table: &LuaTable) -> anyhow::Result<()> {
     mc_table.set(
         "hit_result",
         lua.create_function(|lua, ()| {
-            let jvm = Jvm::get();
-            let mut env = jvm.attach().map_err(lerr)?;
-
+            let mut env = Jvm::get().attach().map_err(lerr)?;
             let mc_obj = Minecraft::get_instance(&mut env)
                 .map_err(lerr)?
                 .ok_or_else(|| LuaError::runtime("Minecraft not ready"))?;
-
             let hr = mc_obj.get_hit_result(&mut env).map_err(lerr)?;
             match hr {
-                Some(h) => Ok(LuaValue::UserData(lua.create_userdata(LuaHitResult(Arc::new(h)))?)),
+                Some(h) => Ok(LuaValue::UserData(
+                    lua.create_userdata(LuaHitResult(Arc::new(h)))?,
+                )),
                 None => Ok(LuaValue::Nil),
             }
         })?,
     )?;
 
-    // mc.entities() → array of LuaEntity
     mc_table.set(
         "entities",
         lua.create_function(|lua, ()| {
-            let jvm = Jvm::get();
-            let mut env = jvm.attach().map_err(lerr)?;
-
-            let mc_obj = Minecraft::get_instance(&mut env)
-                .map_err(lerr)?;
-            let mc_obj = match mc_obj {
+            let mut env = Jvm::get().attach().map_err(lerr)?;
+            let mc_obj = match Minecraft::get_instance(&mut env).map_err(lerr)? {
                 Some(m) => m,
                 None => return Ok(lua.create_table()?),
             };
-
-            let entities = world::get_entities(&mc_obj, &mut env).map_err(lerr)?;
-
+            let snaps = world::get_entities(&mc_obj, &mut env).map_err(lerr)?;
             let t = lua.create_table()?;
-            for (i, e) in entities.into_iter().enumerate() {
-                t.set(i + 1, LuaEntity(Arc::new(e)))?;
+            for (i, snap) in snaps.into_iter().enumerate() {
+                t.set(i + 1, world::LuaEntity(snap))?;
             }
             Ok(t)
         })?,
@@ -108,36 +101,30 @@ pub fn register(lua: &Lua, mc_table: &LuaTable) -> anyhow::Result<()> {
     mc_table.set(
         "block",
         lua.create_function(|lua, (x, y, z): (i32, i32, i32)| {
-            let jvm = Jvm::get();
-            let mut env = jvm.attach().map_err(lerr)?;
-
+            let mut env = Jvm::get().attach().map_err(lerr)?;
             let mc_obj = Minecraft::get_instance(&mut env)
                 .map_err(lerr)?
                 .ok_or_else(|| LuaError::runtime("Minecraft not ready"))?;
-
-            let state = world::get_block_state(&mc_obj, &mut env, x, y, z).map_err(lerr)?;
-            Ok(lua.create_userdata(LuaBlock(Arc::new(state)))?)
+            let type_id = world::get_block_type_id(&mc_obj, &mut env, x, y, z).map_err(lerr)?;
+            Ok(lua.create_userdata(LuaBlock(type_id))?)
         })?,
     )?;
 
-    // mc.attack(entity) — attacks the given LuaEntity
     mc_table.set(
         "attack",
         lua.create_function(|_, entity: LuaAnyUserData| {
-            let entity_ref = entity.borrow::<LuaEntity>()?;
+            let snap = entity.borrow::<world::LuaEntity>()?;
+            let entity_id = snap.0.id;
 
-            let jvm = Jvm::get();
-            let mut env = jvm.attach().map_err(lerr)?;
-
+            let mut env = Jvm::get().attach().map_err(lerr)?;
             let mc_obj = Minecraft::get_instance(&mut env)
                 .map_err(lerr)?
                 .ok_or_else(|| LuaError::runtime("Minecraft not ready"))?;
-
             let player = LocalPlayer::from_minecraft(&mc_obj, &mut env)
                 .map_err(lerr)?
                 .ok_or_else(|| LuaError::runtime("Player is null"))?;
 
-            world::attack(&mc_obj, &player, &entity_ref.0, &mut env).map_err(lerr)
+            world::attack_by_id(&mc_obj, &player, entity_id, &mut env).map_err(lerr)
         })?,
     )?;
 

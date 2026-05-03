@@ -1,13 +1,15 @@
 local module = {
-    name = "NoFall",
+    name        = "NoFall",
     description = "Prevents fall damage",
-    category = "Player",
-    enabled = false,
+    category    = "Player",
+    enabled     = false,
     settings = {
-        mode = "Spoof", -- Spoof, Packet
+        mode      = "Spoof",
+        threshold = 2.0,
     },
     _settings_meta = {
-        mode = { type = "enum", options = { "Spoof", "Packet" } }
+        mode      = { type = "enum", options = { "Spoof", "Packet" } },
+        threshold = { min = 0.5, max = 5.0 }
     }
 }
 
@@ -15,21 +17,27 @@ function module:on_tick()
     local player = mc.player()
     if not player then return end
 
-    local fall_dist = player:fall_distance()
+    local ok_fall, fall_dist = pcall(function() return player:fall_distance() end)
+    if not ok_fall then return end
+    if fall_dist <= self.settings.threshold then return end
+
     local mode = self.settings.mode
 
     if mode == "Spoof" then
-        if fall_dist > 2.0 then
-            player:set_on_ground(true)
-        end
+        pcall(function() player:set_on_ground(true) end)
+
     elseif mode == "Packet" then
-        if fall_dist > 2.0 then
-            local x, y, z = player:x(), player:y(), player:z()
-            local packet = anemoia.create_position_packet(x, y, z, true)
-            mc.send_packet(packet)
-            -- We don't have a way to set fall distance directly yet,
-            -- but sending the packet should tell the server we landed.
-        end
+        local ok_pos, x, y, z = pcall(function()
+            return player:x(), player:y(), player:z()
+        end)
+        if not ok_pos then return end
+
+        local ok_pkt, packet = pcall(function()
+            return anemoia.create_position_packet(x, y, z, true)
+        end)
+        if not ok_pkt or not packet then return end
+
+        pcall(function() mc.send_packet(packet, false) end)
     end
 end
 

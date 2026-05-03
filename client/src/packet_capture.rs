@@ -96,10 +96,6 @@ impl PacketCapture {
         self.selected_id = None;
     }
 
-    pub fn len(&self) -> usize {
-        self.buf.len()
-    }
-
     pub fn visible_ids(&self) -> Vec<u64> {
         let q = self.search.to_lowercase();
         self.buf

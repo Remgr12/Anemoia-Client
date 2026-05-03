@@ -4,6 +4,7 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-changed=java/AnemoiaInterceptor.java");
     println!("cargo:rerun-if-changed=java/netty_stubs");
+    println!("cargo::rustc-check-cfg=cfg(incoming_capture)");
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
 

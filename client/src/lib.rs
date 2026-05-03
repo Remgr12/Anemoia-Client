@@ -1,3 +1,4 @@
+pub mod config;
 mod glfw;
 mod gui;
 mod hook;
@@ -6,6 +7,8 @@ mod jvm;
 mod lua_api;
 mod lua_engine;
 pub mod mc;
+mod packet_capture;
+pub mod zulip;
 
 use log::info;
 use simplelog::{Config, LevelFilter, WriteLogger};
@@ -59,6 +62,7 @@ fn init(raw_jvm: *mut jni::sys::JavaVM) -> anyhow::Result<()> {
     jvm::Jvm::init(raw_jvm)?;
     info!("JVM acquired");
 
+    zulip::init();
     lua_engine::init()?;
     info!("Lua engine ready");
 

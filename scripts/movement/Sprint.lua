@@ -1,12 +1,12 @@
 local module = {
-    name = "Sprint",
+    name        = "Sprint",
     description = "Automatically sprints while moving",
-    category = "Movement",
-    enabled = false,
+    category    = "Movement",
+    enabled     = false,
     settings = {
-        mode = "Legit", -- Legit, Omnidirectional
+        mode      = "Legit",
         blindness = true,
-        hunger = true,
+        hunger    = true,
     },
     _settings_meta = {
         mode = { type = "enum", options = { "Legit", "Omnidirectional" } }
@@ -17,52 +17,42 @@ function module:on_tick()
     local player = mc.player()
     if not player then return end
 
-    local input = player:input()
-    
-    -- Basic movement check: is the player pushing any movement keys?
+    local ok_input, input = pcall(function() return player:input() end)
+    if not ok_input or not input then return end
+
     local is_moving = input.up or input.down or input.left or input.right
-    if not is_moving then
-        return
+    if not is_moving then return end
+    if input.sneaking then return end
+
+    local ok_use, using_item = pcall(function() return player:is_using_item() end)
+    if ok_use and using_item then return end
+
+    if not self.settings.blindness then
+        local ok_eff, has_blind = pcall(function()
+            return player:has_effect("blindness")
+        end)
+        if ok_eff and has_blind then return end
     end
 
-    -- LiquidBounce checks:
-    -- 1. Blindness
-    if not self.settings.blindness and player:has_effect("blindness") then
-        return
-    end
-
-    -- 2. Hunger (food level > 6 is required for sprinting in vanilla)
-    if not self.settings.hunger and player:food_level() <= 6 then
-        return
-    end
-
-    -- 3. Using item
-    if player:is_using_item() then
-        return
-    end
-
-    -- 4. Sneaking
-    if input.sneaking then
-        return
+    if not self.settings.hunger then
+        local ok_food, food = pcall(function() return player:food_level() end)
+        if ok_food and food <= 6 then return end
     end
 
     local mode = self.settings.mode
     if mode == "Legit" then
-        -- In legit mode, we only sprint if moving forward
         if input.up then
-            player:set_sprinting(true)
+            pcall(function() player:set_sprinting(true) end)
         end
     elseif mode == "Omnidirectional" then
-        -- In omni mode, we sprint if moving in any direction
-        player:set_sprinting(true)
+        pcall(function() player:set_sprinting(true) end)
     end
 end
 
 function module:on_disable()
     local player = mc.player()
-    if player then
-        player:set_sprinting(false)
-    end
+    if not player then return end
+    pcall(function() player:set_sprinting(false) end)
 end
 
 anemoia.register(module)

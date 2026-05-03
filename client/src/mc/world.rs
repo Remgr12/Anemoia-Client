@@ -1,118 +1,42 @@
 //! JNI wrappers for world-level queries: entity iteration and combat actions.
+//!
+//! Design notes:
+//! - Entities are represented as `EntitySnapshot` (plain Rust data, no GlobalRef).
+//!   All per-entity JNI calls happen in one bulk pass inside `get_entities`.
+//! - Block type IDs are returned as plain `String`; no GlobalRef for BlockState/BlockPos.
+//! - Every bulk operation uses `push_local_frame`/`pop_local_frame` to bound local-ref
+//!   table growth and prevent the table-overflow JVM crashes seen with `GlobalRef`-per-entity.
 
 use anyhow::Result;
 use jni::{
-    objects::{GlobalRef, JValue},
+    objects::{GlobalRef, JObject, JValue},
+    signature::{Primitive, ReturnType},
     JNIEnv,
 };
-use std::sync::Arc;
 
-use super::{minecraft::Minecraft, paths, player::LocalPlayer};
+use super::{method_ids, minecraft::Minecraft, paths, player::LocalPlayer};
 
-// ── Entity ────────────────────────────────────────────────────────────────────
+// ── Entity snapshot ────────────────────────────────────────────────────────────
 
-pub struct Entity {
-    pub jni_ref: GlobalRef,
+/// All entity data captured in one JNI pass. No JNI required after creation.
+#[derive(Clone)]
+pub struct EntitySnapshot {
+    pub id:             i32,
+    pub x:              f64,
+    pub y:              f64,
+    pub z:              f64,
+    pub yaw:            f32,
+    pub pitch:          f32,
+    pub alive:          bool,
+    pub type_id:        String,
+    pub name:           String,
+    pub is_local_player: bool,
 }
 
-impl Entity {
-    pub fn get_x(&self, env: &mut JNIEnv) -> Result<f64> {
-        Ok(env.call_method(self.jni_ref.as_obj(), "getX", "()D", &[])?.d()?)
-    }
+/// mlua `UserData` wrapper around an `EntitySnapshot`.
+pub struct LuaEntity(pub EntitySnapshot);
 
-    pub fn get_y(&self, env: &mut JNIEnv) -> Result<f64> {
-        Ok(env.call_method(self.jni_ref.as_obj(), "getY", "()D", &[])?.d()?)
-    }
-
-    pub fn get_z(&self, env: &mut JNIEnv) -> Result<f64> {
-        Ok(env.call_method(self.jni_ref.as_obj(), "getZ", "()D", &[])?.d()?)
-    }
-
-    pub fn get_yaw(&self, env: &mut JNIEnv) -> Result<f32> {
-        Ok(env.call_method(self.jni_ref.as_obj(), "getYRot", "()F", &[])?.f()?)
-    }
-
-    pub fn get_pitch(&self, env: &mut JNIEnv) -> Result<f32> {
-        Ok(env.call_method(self.jni_ref.as_obj(), "getXRot", "()F", &[])?.f()?)
-    }
-
-    pub fn is_alive(&self, env: &mut JNIEnv) -> Result<bool> {
-        Ok(env.call_method(self.jni_ref.as_obj(), "isAlive", "()Z", &[])?.z()?)
-    }
-
-    /// Returns `entity.getType().getDescriptionId()` — e.g. `"entity.minecraft.zombie"`.
-    pub fn type_id(&self, env: &mut JNIEnv) -> Result<String> {
-        let entity_type = env
-            .call_method(
-                self.jni_ref.as_obj(),
-                "getType",
-                "()Lnet/minecraft/world/entity/EntityType;",
-                &[],
-            )?
-            .l()?;
-
-        let id_jstr = env
-            .call_method(&entity_type, "getDescriptionId", "()Ljava/lang/String;", &[])?
-            .l()?;
-
-        // Bind to a local first so the JavaStr borrow ends before id_jstr drops.
-        let s: String = env.get_string((&id_jstr).into())?.into();
-        Ok(s)
-    }
-
-    pub fn get_name(&self, env: &mut JNIEnv) -> Result<String> {
-        let name_component = env
-            .call_method(
-                self.jni_ref.as_obj(),
-                "getName",
-                "()Lnet/minecraft/network/chat/Component;",
-                &[],
-            )?
-            .l()?;
-
-        let name_jstr = env
-            .call_method(&name_component, "getString", "()Ljava/lang/String;", &[])?
-            .l()?;
-
-        let s: String = env.get_string((&name_jstr).into())?.into();
-        Ok(s)
-    }
-
-    /// `true` if this entity is a `LocalPlayer` (the controlled player).
-    pub fn is_local_player(&self, env: &mut JNIEnv) -> Result<bool> {
-        let cls = crate::jvm::Jvm::find_class(env, paths::LOCAL_PLAYER)?;
-        Ok(env.is_instance_of(self.jni_ref.as_obj(), cls)?)
-    }
-}
-
-pub struct BlockPos {
-    pub jni_ref: GlobalRef,
-}
-
-impl BlockPos {
-    pub fn new(env: &mut JNIEnv, x: i32, y: i32, z: i32) -> Result<Self> {
-        let cls = crate::jvm::Jvm::find_class(env, paths::BLOCK_POS)?;
-        let obj = env.new_object(cls, "(III)V", &[
-            JValue::Int(x),
-            JValue::Int(y),
-            JValue::Int(z),
-        ])?;
-        Ok(BlockPos { jni_ref: env.new_global_ref(obj)? })
-    }
-}
-
-pub struct BlockState {
-    pub jni_ref: GlobalRef,
-}
-
-impl BlockState {
-    pub fn type_id(&self, env: &mut JNIEnv) -> Result<String> {
-        let block = env.call_method(self.jni_ref.as_obj(), "getBlock", "()Lnet/minecraft/world/level/block/Block;", &[])?.l()?;
-        let description_id = env.call_method(&block, "getDescriptionId", "()Ljava/lang/String;", &[])?.l()?;
-        let s: String = env.get_string((&description_id).into())?.into();
-        Ok(s)
-    }
-}
+// ── HitResult (still holds a GlobalRef — it is long-lived) ────────────────────
 
 pub struct HitResult {
     pub jni_ref: GlobalRef,
@@ -120,149 +44,362 @@ pub struct HitResult {
 
 impl HitResult {
     pub fn get_type(&self, env: &mut JNIEnv) -> Result<String> {
-        let type_obj = env.call_method(self.jni_ref.as_obj(), "getType", "()Lnet/minecraft/world/phys/HitResult$Type;", &[])?.l()?;
-        let name_jstr = env.call_method(&type_obj, "name", "()Ljava/lang/String;", &[])?.l()?;
+        let type_obj = env
+            .call_method(
+                self.jni_ref.as_obj(),
+                "getType",
+                "()Lnet/minecraft/world/phys/HitResult$Type;",
+                &[],
+            )?
+            .l()?;
+        let name_jstr = env
+            .call_method(&type_obj, "name", "()Ljava/lang/String;", &[])?
+            .l()?;
         let s: String = env.get_string((&name_jstr).into())?.into();
         Ok(s)
     }
 
-    pub fn get_entity(&self, env: &mut JNIEnv) -> Result<Option<Entity>> {
-        let cls = crate::jvm::Jvm::find_class(env, paths::ENTITY_HIT_RESULT)?;
-        if env.is_instance_of(self.jni_ref.as_obj(), cls)? {
-            let entity_obj = env.call_method(self.jni_ref.as_obj(), "getEntity", "()Lnet/minecraft/world/entity/Entity;", &[])?.l()?;
-            if entity_obj.is_null() {
-                return Ok(None);
-            }
-            return Ok(Some(Entity { jni_ref: env.new_global_ref(entity_obj)? }));
+    /// Returns a full snapshot of the hit entity (if this is an EntityHitResult).
+    pub fn get_entity(&self, env: &mut JNIEnv) -> Result<Option<EntitySnapshot>> {
+        let ehr_cls = crate::jvm::Jvm::find_class(env, paths::ENTITY_HIT_RESULT)?;
+        if !env.is_instance_of(self.jni_ref.as_obj(), &ehr_cls)? {
+            return Ok(None);
         }
-        Ok(None)
+        let entity_obj = env
+            .call_method(
+                self.jni_ref.as_obj(),
+                "getEntity",
+                "()Lnet/minecraft/world/entity/Entity;",
+                &[],
+            )?
+            .l()?;
+        if entity_obj.is_null() {
+            return Ok(None);
+        }
+        let snap = extract_snapshot_slow(env, &entity_obj)?;
+        Ok(Some(snap))
     }
 }
 
-/// mlua `UserData` wrapper — holds an `Arc` so multiple Lua references share
-/// the same `GlobalRef` without copying.
-pub struct LuaEntity(pub Arc<Entity>);
+pub struct LuaHitResult(pub std::sync::Arc<HitResult>);
 
-pub struct LuaHitResult(pub Arc<HitResult>);
+// ── Entity iteration ───────────────────────────────────────────────────────────
 
-// ── World queries ─────────────────────────────────────────────────────────────
-
-/// Returns all entities in the current level by iterating `level.getEntities().getAll()`.
+/// Extract one entity snapshot using cached method IDs (fast path).
 ///
-/// Returns an empty list when not in a world (level == null).
-pub fn get_entities(mc: &Minecraft, env: &mut JNIEnv) -> Result<Vec<Entity>> {
-    let level = env
-        .get_field(
-            mc.jni_ref.as_obj(),
-            "level",
-            "Lnet/minecraft/client/multiplayer/ClientLevel;",
-        )?
-        .l()?;
+/// # Safety
+/// Caller guarantees `m` was resolved for the JVM we are currently attached to,
+/// and that every method ID still belongs to a loaded class (always true for MC).
+unsafe fn extract_snapshot_fast(
+    env: &mut JNIEnv,
+    obj: &JObject<'_>,
+    m: &method_ids::MethodIds,
+) -> Result<EntitySnapshot> {
+    env.push_local_frame(8)?;
 
-    if level.is_null() {
-        return Ok(vec![]);
+    let result: Result<EntitySnapshot> = (|| {
+        let id    = unsafe { env.call_method_unchecked(obj, m.entity_get_id,    ReturnType::Primitive(Primitive::Int),     &[]) }?.i()?;
+        let x     = unsafe { env.call_method_unchecked(obj, m.entity_get_x,     ReturnType::Primitive(Primitive::Double),  &[]) }?.d()?;
+        let y     = unsafe { env.call_method_unchecked(obj, m.entity_get_y,     ReturnType::Primitive(Primitive::Double),  &[]) }?.d()?;
+        let z     = unsafe { env.call_method_unchecked(obj, m.entity_get_z,     ReturnType::Primitive(Primitive::Double),  &[]) }?.d()?;
+        let yaw   = unsafe { env.call_method_unchecked(obj, m.entity_get_y_rot, ReturnType::Primitive(Primitive::Float),   &[]) }?.f()?;
+        let pitch = unsafe { env.call_method_unchecked(obj, m.entity_get_x_rot, ReturnType::Primitive(Primitive::Float),   &[]) }?.f()?;
+        let alive = unsafe { env.call_method_unchecked(obj, m.entity_is_alive,  ReturnType::Primitive(Primitive::Boolean), &[]) }?.z()?;
+
+        let type_obj   = unsafe { env.call_method_unchecked(obj, m.entity_get_type, ReturnType::Object, &[]) }?.l()?;
+        let desc_jstr  = unsafe { env.call_method_unchecked(&type_obj, m.entity_type_get_desc_id, ReturnType::Object, &[]) }?.l()?;
+        let type_id: String = env.get_string((&desc_jstr).into())?.into();
+
+        let name_comp  = unsafe { env.call_method_unchecked(obj, m.entity_get_name, ReturnType::Object, &[]) }?.l()?;
+        let name_jstr  = unsafe { env.call_method_unchecked(&name_comp, m.component_get_string, ReturnType::Object, &[]) }?.l()?;
+        let name: String = env.get_string((&name_jstr).into())?.into();
+
+        let is_local_player = env.is_instance_of(obj, &m.local_player_class)?;
+
+        Ok(EntitySnapshot { id, x, y, z, yaw, pitch, alive, type_id, name, is_local_player })
+    })();
+
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
     }
+    let _ = unsafe { env.pop_local_frame(&JObject::null()) };
+    result
+}
 
-    // level.getEntities() → LevelEntityGetter<Entity>
-    let getter = env
-        .call_method(
-            &level,
-            "getEntities",
-            "()Lnet/minecraft/world/level/entity/LevelEntityGetter;",
-            &[],
-        )?
-        .l()?;
+/// Extract one entity snapshot using named JNI lookups (slow / first-tick fallback).
+fn extract_snapshot_slow(env: &mut JNIEnv, obj: &JObject<'_>) -> Result<EntitySnapshot> {
+    env.push_local_frame(8)?;
 
-    if getter.is_null() {
-        return Ok(vec![]);
+    let result: Result<EntitySnapshot> = (|| {
+        let id    = env.call_method(obj, "getId",    "()I", &[])?.i()?;
+        let x     = env.call_method(obj, "getX",     "()D", &[])?.d()?;
+        let y     = env.call_method(obj, "getY",     "()D", &[])?.d()?;
+        let z     = env.call_method(obj, "getZ",     "()D", &[])?.d()?;
+        let yaw   = env.call_method(obj, "getYRot",  "()F", &[])?.f()?;
+        let pitch = env.call_method(obj, "getXRot",  "()F", &[])?.f()?;
+        let alive = env.call_method(obj, "isAlive",  "()Z", &[])?.z()?;
+
+        let type_obj  = env.call_method(obj, "getType",
+            "()Lnet/minecraft/world/entity/EntityType;", &[])?.l()?;
+        let desc_jstr = env.call_method(&type_obj, "getDescriptionId",
+            "()Ljava/lang/String;", &[])?.l()?;
+        let type_id: String = env.get_string((&desc_jstr).into())?.into();
+
+        let name_comp = env.call_method(obj, "getName",
+            "()Lnet/minecraft/network/chat/Component;", &[])?.l()?;
+        let name_jstr = env.call_method(&name_comp, "getString",
+            "()Ljava/lang/String;", &[])?.l()?;
+        let name: String = env.get_string((&name_jstr).into())?.into();
+
+        let lp_cls = crate::jvm::Jvm::find_class(env, paths::LOCAL_PLAYER)?;
+        let is_local_player = env.is_instance_of(obj, &lp_cls)?;
+
+        Ok(EntitySnapshot { id, x, y, z, yaw, pitch, alive, type_id, name, is_local_player })
+    })();
+
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
     }
+    let _ = unsafe { env.pop_local_frame(&JObject::null()) };
+    result
+}
 
-    // getter.getAll() → Iterable<Entity> (generic erased to raw Iterable)
-    let iterable = env
-        .call_method(&getter, "getAll", "()Ljava/lang/Iterable;", &[])?
-        .l()?;
-
-    if iterable.is_null() {
-        return Ok(vec![]);
+/// Returns all entities in the current level as data-only `EntitySnapshot`s.
+///
+/// Local frame management ensures the local-ref table stays bounded regardless
+/// of entity count. No `GlobalRef` is created per entity.
+pub fn get_entities(mc: &Minecraft, env: &mut JNIEnv) -> Result<Vec<EntitySnapshot>> {
+    // Lazy one-time init of method ID cache.
+    if method_ids::get().is_none() {
+        let _ = method_ids::init(env);
     }
+    let ids = method_ids::get();
 
-    // Iterate with java.util.Iterator
-    let iterator = env
-        .call_method(&iterable, "iterator", "()Ljava/util/Iterator;", &[])?
-        .l()?;
+    // Outer frame holds: level, getter, iterable, iterator (≤ 4 local refs).
+    env.push_local_frame(16)?;
 
-    let mut entities = vec![];
-
-    loop {
-        let has_next = env
-            .call_method(&iterator, "hasNext", "()Z", &[])?
-            .z()?;
-
-        if !has_next {
-            break;
+    let result: Result<Vec<EntitySnapshot>> = (|| {
+        let level = env
+            .get_field(
+                mc.jni_ref.as_obj(),
+                "level",
+                "Lnet/minecraft/client/multiplayer/ClientLevel;",
+            )?
+            .l()?;
+        if level.is_null() {
+            return Ok(vec![]);
         }
 
-        let obj = env
-            .call_method(&iterator, "next", "()Ljava/lang/Object;", &[])?
+        let getter = env
+            .call_method(
+                &level,
+                "getEntities",
+                "()Lnet/minecraft/world/level/entity/LevelEntityGetter;",
+                &[],
+            )?
+            .l()?;
+        if getter.is_null() {
+            return Ok(vec![]);
+        }
+
+        let iterable = match ids {
+            Some(m) => unsafe {
+                env.call_method_unchecked(&getter, m.level_getter_get_all, ReturnType::Object, &[])?
+                    .l()?
+            },
+            None => env
+                .call_method(&getter, "getAll", "()Ljava/lang/Iterable;", &[])?
+                .l()?,
+        };
+        if iterable.is_null() {
+            return Ok(vec![]);
+        }
+
+        let iterator = match ids {
+            Some(m) => unsafe {
+                env.call_method_unchecked(&iterable, m.iterable_iterator, ReturnType::Object, &[])?
+                    .l()?
+            },
+            None => env
+                .call_method(&iterable, "iterator", "()Ljava/util/Iterator;", &[])?
+                .l()?,
+        };
+
+        let mut snapshots = Vec::new();
+
+        loop {
+            let has_next = match ids {
+                Some(m) => unsafe {
+                    env.call_method_unchecked(
+                        &iterator,
+                        m.iter_has_next,
+                        ReturnType::Primitive(Primitive::Boolean),
+                        &[],
+                    )?
+                    .z()?
+                },
+                None => env.call_method(&iterator, "hasNext", "()Z", &[])?.z()?,
+            };
+            if !has_next {
+                break;
+            }
+
+            let obj = match ids {
+                Some(m) => unsafe {
+                    env.call_method_unchecked(&iterator, m.iter_next, ReturnType::Object, &[])?
+                        .l()?
+                },
+                None => env
+                    .call_method(&iterator, "next", "()Ljava/lang/Object;", &[])?
+                    .l()?,
+            };
+
+            if obj.is_null() {
+                let _ = env.delete_local_ref(obj);
+                continue;
+            }
+
+            // extract_snapshot_* push/pop their own inner frame for temporaries.
+            let snap = match ids {
+                Some(m) => unsafe { extract_snapshot_fast(env, &obj, m) },
+                None => extract_snapshot_slow(env, &obj),
+            };
+
+            // Release entity local ref — prevents outer-frame overflow for large worlds.
+            let _ = env.delete_local_ref(obj);
+
+            match snap {
+                Ok(s) => snapshots.push(s),
+                Err(_) => {
+                    // Entity may have been removed mid-iteration; skip it.
+                    let _ = env.exception_clear();
+                }
+            }
+        }
+
+        Ok(snapshots)
+    })();
+
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+    let _ = unsafe { env.pop_local_frame(&JObject::null()) };
+    result
+}
+
+// ── Block query ────────────────────────────────────────────────────────────────
+
+/// Returns the block's description ID string (e.g. `"block.minecraft.air"`).
+///
+/// Uses a local frame — no `GlobalRef` is created for BlockPos or BlockState.
+pub fn get_block_type_id(mc: &Minecraft, env: &mut JNIEnv, x: i32, y: i32, z: i32) -> Result<String> {
+    env.push_local_frame(8)?;
+
+    let result: Result<String> = (|| {
+        let level = env
+            .get_field(
+                mc.jni_ref.as_obj(),
+                "level",
+                "Lnet/minecraft/client/multiplayer/ClientLevel;",
+            )?
+            .l()?;
+        anyhow::ensure!(!level.is_null(), "level is null");
+
+        // BlockPos as a plain local object — no GlobalRef needed.
+        let bp_cls = crate::jvm::Jvm::find_class(env, paths::BLOCK_POS)?;
+        let pos = env.new_object(&bp_cls, "(III)V", &[
+            JValue::Int(x),
+            JValue::Int(y),
+            JValue::Int(z),
+        ])?;
+
+        let state = env
+            .call_method(
+                &level,
+                "getBlockState",
+                "(Lnet/minecraft/core/BlockPos;)Lnet/minecraft/world/level/block/state/BlockState;",
+                &[JValue::Object(&pos)],
+            )?
+            .l()?;
+        anyhow::ensure!(!state.is_null(), "getBlockState returned null");
+
+        let block = env
+            .call_method(&state, "getBlock", "()Lnet/minecraft/world/level/block/Block;", &[])?
             .l()?;
 
-        if obj.is_null() {
-            continue;
-        }
+        let desc_jstr = env
+            .call_method(&block, "getDescriptionId", "()Ljava/lang/String;", &[])?
+            .l()?;
 
-        entities.push(Entity {
-            jni_ref: env.new_global_ref(obj)?,
-        });
+        let s: String = env.get_string((&desc_jstr).into())?.into();
+        Ok(s)
+    })();
+
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
     }
-
-    Ok(entities)
-}
-
-pub fn get_block_state(mc: &Minecraft, env: &mut JNIEnv, x: i32, y: i32, z: i32) -> Result<BlockState> {
-    let level = env
-        .get_field(
-            mc.jni_ref.as_obj(),
-            "level",
-            "Lnet/minecraft/client/multiplayer/ClientLevel;",
-        )?
-        .l()?;
-
-    anyhow::ensure!(!level.is_null(), "level is null");
-
-    let pos = BlockPos::new(env, x, y, z)?;
-    let state_obj = env.call_method(&level, "getBlockState", "(Lnet/minecraft/core/BlockPos;)Lnet/minecraft/world/level/block/state/BlockState;", &[
-        JValue::Object(pos.jni_ref.as_obj())
-    ])?.l()?;
-
-    Ok(BlockState { jni_ref: env.new_global_ref(state_obj)? })
+    let _ = unsafe { env.pop_local_frame(&JObject::null()) };
+    result
 }
 
 // ── Combat ────────────────────────────────────────────────────────────────────
 
-/// Calls `MultiPlayerGameMode.attack(player, target)`.
+/// Attacks an entity identified by its entity ID.
 ///
-/// MC descriptor:
-///   `(Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/entity/Entity;)V`
-pub fn attack(mc: &Minecraft, player: &LocalPlayer, target: &Entity, env: &mut JNIEnv) -> Result<()> {
-    let gamemode = env
-        .get_field(
-            mc.jni_ref.as_obj(),
-            "gameMode",
-            "Lnet/minecraft/client/multiplayer/MultiPlayerGameMode;",
-        )?
-        .l()?;
+/// Looks the entity up fresh from the level — no stored GlobalRef required.
+pub fn attack_by_id(
+    mc: &Minecraft,
+    player: &LocalPlayer,
+    entity_id: i32,
+    env: &mut JNIEnv,
+) -> Result<()> {
+    env.push_local_frame(8)?;
 
-    anyhow::ensure!(!gamemode.is_null(), "gameMode is null (not in a world?)");
+    let result: Result<()> = (|| {
+        let level = env
+            .get_field(
+                mc.jni_ref.as_obj(),
+                "level",
+                "Lnet/minecraft/client/multiplayer/ClientLevel;",
+            )?
+            .l()?;
+        anyhow::ensure!(!level.is_null(), "level is null");
 
-    env.call_method(
-        &gamemode,
-        "attack",
-        "(Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/entity/Entity;)V",
-        &[
-            JValue::Object(player.jni_ref.as_obj()),
-            JValue::Object(target.jni_ref.as_obj()),
-        ],
-    )?;
+        let entity = env
+            .call_method(
+                &level,
+                "getEntity",
+                "(I)Lnet/minecraft/world/entity/Entity;",
+                &[JValue::Int(entity_id)],
+            )?
+            .l()?;
+        anyhow::ensure!(!entity.is_null(), "entity {} not found in level", entity_id);
 
-    Ok(())
+        let gamemode = env
+            .get_field(
+                mc.jni_ref.as_obj(),
+                "gameMode",
+                "Lnet/minecraft/client/multiplayer/MultiPlayerGameMode;",
+            )?
+            .l()?;
+        anyhow::ensure!(!gamemode.is_null(), "gameMode is null");
+
+        env.call_method(
+            &gamemode,
+            "attack",
+            "(Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/entity/Entity;)V",
+            &[
+                JValue::Object(player.jni_ref.as_obj()),
+                JValue::Object(&entity),
+            ],
+        )?;
+
+        Ok(())
+    })();
+
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+    let _ = unsafe { env.pop_local_frame(&JObject::null()) };
+    result
 }

@@ -156,11 +156,6 @@ impl LuaUserData for LuaPlayer {
             with_env(|env| this.0.get_container_id(env))
         });
 
-        m.add_method("destroy_speed", |_, this, (block_state_ud,): (LuaAnyUserData,)| {
-            let block_state = block_state_ud.borrow::<crate::lua_api::world::LuaBlock>()?;
-            with_env(|env| this.0.get_destroy_speed(env, &block_state.0))
-        });
-
         m.add_method("fall_distance", |_, this, ()| {
             with_env(|env| this.0.get_fall_distance(env))
         });
@@ -184,6 +179,10 @@ impl LuaUserData for LuaPlayer {
         m.add_method("inventory", |lua, this, ()| {
             let inv = with_env(|env| this.0.get_inventory(env))?;
             Ok(lua.create_userdata(LuaInventory(Arc::new(inv)))?)
+        });
+
+        m.add_method("display_message", |_, this, (message,): (String,)| {
+            with_env(|env| this.0.display_message(env, &message))
         });
     }
 }

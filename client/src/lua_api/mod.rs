@@ -145,6 +145,17 @@ pub fn register(lua: &Lua) -> Result<()> {
     )?;
 
     mc.set(
+        "place_block",
+        lua.create_function(|_, (x, y, z, face): (i32, i32, i32, String)| {
+            with_env(|env| {
+                let mc_obj = crate::mc::minecraft::Minecraft::get_instance(env)?
+                    .ok_or_else(|| anyhow::anyhow!("Minecraft not ready"))?;
+                mc_obj.place_block_on_face(env, x, y, z, &face)
+            })
+        })?,
+    )?;
+
+    mc.set(
         "set_gamma",
         lua.create_function(|_, value: f64| {
             with_env(|env| {
@@ -163,6 +174,57 @@ pub fn register(lua: &Lua) -> Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("Minecraft not ready"))?;
                 mc_obj.inventory_click(env, container_id, slot, button, &click_type)
             })
+        })?,
+    )?;
+
+    anemoia.set(
+        "zulip_config",
+        lua.create_function(|_, cfg: LuaTable| {
+            let mut config = crate::zulip::get_config();
+            if let Ok(enabled) = cfg.get::<bool>("enabled") { config.enabled = enabled; }
+            if let Ok(url) = cfg.get::<String>("url") { config.url = url; }
+            if let Ok(email) = cfg.get::<String>("email") { config.email = email; }
+            if let Ok(api_key) = cfg.get::<String>("api_key") { config.api_key = api_key; }
+            if let Ok(stream) = cfg.get::<String>("stream") { config.stream = stream; }
+            if let Ok(topic) = cfg.get::<String>("topic") { config.topic = topic; }
+            if let Ok(poll_rate) = cfg.get::<f64>("poll_rate") { config.poll_rate = poll_rate; }
+            
+            crate::zulip::set_config(config);
+            Ok(())
+        })?,
+    )?;
+
+    anemoia.set(
+        "zulip_send",
+        lua.create_function(|_, msg: String| {
+            crate::zulip::send_message(msg);
+            Ok(())
+        })?,
+    )?;
+
+    anemoia.set(
+        "zulip_get_messages",
+        lua.create_function(|lua, ()| {
+            let messages = crate::zulip::get_messages();
+            let table = lua.create_table()?;
+            for (i, msg) in messages.into_iter().enumerate() {
+                let msg_table = lua.create_table()?;
+                msg_table.set("sender", msg.sender)?;
+                msg_table.set("content", msg.content)?;
+                msg_table.set("time", msg.time)?;
+                msg_table.set("stream", msg.stream)?;
+                msg_table.set("topic", msg.topic)?;
+                table.set(i + 1, msg_table)?;
+            }
+            Ok(table)
+        })?,
+    )?;
+
+    anemoia.set(
+        "zulip_clear",
+        lua.create_function(|_, ()| {
+            crate::zulip::clear_messages();
+            Ok(())
         })?,
     )?;
 
