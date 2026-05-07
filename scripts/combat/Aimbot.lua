@@ -33,7 +33,7 @@ function module:on_tick()
                 valid = true
             elseif filter == "Players" and tid:find("player") then
                 valid = true
-            elseif filter == "Mobs" and (tid:find("zombie") or tid:find("skeleton") or tid:find("creeper") or tid:find("spider")) then
+            elseif filter == "Mobs" and not tid:find("player") then
                 valid = true
             end
 

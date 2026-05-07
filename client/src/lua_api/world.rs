@@ -35,6 +35,8 @@ impl LuaUserData for world::LuaEntity {
         m.add_method("type_id",        |_, this, ()| Ok(this.0.type_id.clone()));
         m.add_method("name",           |_, this, ()| Ok(this.0.name.clone()));
         m.add_method("is_local_player",|_, this, ()| Ok(this.0.is_local_player));
+        m.add_method("health",         |_, this, ()| Ok(this.0.health));
+        m.add_method("id",             |_, this, ()| Ok(this.0.id));
         m.add_method("dist_sq", |_, this, (ox, oy, oz): (f64, f64, f64)| {
             let dx = this.0.x - ox;
             let dy = this.0.y - oy;

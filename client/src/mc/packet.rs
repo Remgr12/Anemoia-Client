@@ -49,12 +49,11 @@ pub struct Connection {
 impl Connection {
     pub fn send(&self, env: &mut JNIEnv, packet: &Packet, use_hook: bool) -> Result<()> {
         let cancelled = if use_hook {
-            let jni_ref = env.new_global_ref(packet.jni_ref.as_obj())?;
-            let p_obj = Packet::new(jni_ref);
-            let type_name = p_obj.type_name(env).unwrap_or_default();
-            let cancelled = crate::lua_engine::on_packet_send(p_obj)?;
-            if let Ok(gref) = env.new_global_ref(packet.jni_ref.as_obj()) {
-                crate::packet_capture::push_out(type_name, gref, cancelled);
+            let type_name = packet.type_name(env).unwrap_or_default();
+            let hook_ref = env.new_global_ref(packet.jni_ref.as_obj())?;
+            let cancelled = crate::lua_engine::on_packet_send(Packet::new(hook_ref))?;
+            if let Ok(cap_ref) = env.new_global_ref(packet.jni_ref.as_obj()) {
+                crate::packet_capture::push_out(type_name, cap_ref, cancelled);
             }
             cancelled
         } else {

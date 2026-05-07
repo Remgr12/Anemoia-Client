@@ -13,7 +13,7 @@ function module:on_tick()
     if not player then return end
 
     local input = player:input()
-    if input.up then
+    if input.up or input.down or input.left or input.right then
         player:set_sprinting(true)
     end
 end

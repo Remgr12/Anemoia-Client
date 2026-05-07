@@ -91,17 +91,32 @@ impl LuaUserData for LuaPlayer {
             Ok(lua.create_userdata(super::item::LuaItemStack(Arc::new(item)))?)
         });
 
+        m.add_method("health", |_, this, ()| {
+            with_env(|env| this.0.get_health(env))
+        });
+
+        m.add_method("max_health", |_, this, ()| {
+            with_env(|env| this.0.get_max_health(env))
+        });
+
+        m.add_method("absorption", |_, this, ()| {
+            with_env(|env| this.0.get_absorption_amount(env))
+        });
+
+        m.add_method("swing_arm", |_, this, (hand,): (Option<String>,)| {
+            let hand = hand.unwrap_or_else(|| "MAIN_HAND".to_owned());
+            with_env(|env| this.0.swing_arm(env, &hand))
+        });
+
         m.add_method("has_effect", |_, this, (effect_name,): (String,)| {
             with_env(|env| {
-                // This is a bit complex as we need to find the MobEffect.
-                // For simplicity, let's just handle "blindness" for now.
-                // In a real implementation, we'd have a registry lookup.
-                if effect_name == "blindness" {
-                    let cls = Jvm::find_class(env, "net/minecraft/world/effect/MobEffects")?;
-                    let effect = env.get_static_field(cls, "BLINDNESS", "Lnet/minecraft/world/effect/MobEffect;")?.l()?;
-                    return this.0.has_effect(env, effect);
-                }
-                Ok(false)
+                let field = match mob_effect_field(&effect_name) {
+                    Some(f) => f,
+                    None => return Ok(false),
+                };
+                let cls = Jvm::find_class(env, "net/minecraft/world/effect/MobEffects")?;
+                let effect = env.get_static_field(cls, field, "Lnet/minecraft/world/effect/MobEffect;")?.l()?;
+                this.0.has_effect(env, effect)
             })
         });
 
@@ -143,12 +158,13 @@ impl LuaUserData for LuaPlayer {
 
         m.add_method("remove_effect", |_, this, (effect_name,): (String,)| {
             with_env(|env| {
-                if effect_name == "blindness" {
-                    let cls = Jvm::find_class(env, "net/minecraft/world/effect/MobEffects")?;
-                    let effect = env.get_static_field(cls, "BLINDNESS", "Lnet/minecraft/world/effect/MobEffect;")?.l()?;
-                    return this.0.remove_effect(env, effect);
-                }
-                Ok(())
+                let field = match mob_effect_field(&effect_name) {
+                    Some(f) => f,
+                    None => return Ok(()),
+                };
+                let cls = Jvm::find_class(env, "net/minecraft/world/effect/MobEffects")?;
+                let effect = env.get_static_field(cls, field, "Lnet/minecraft/world/effect/MobEffect;")?.l()?;
+                this.0.remove_effect(env, effect)
             })
         });
 
@@ -219,6 +235,44 @@ pub fn register(lua: &Lua, mc: &LuaTable) -> anyhow::Result<()> {
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
+
+fn mob_effect_field(name: &str) -> Option<&'static str> {
+    match name.to_lowercase().replace(['-', ' '], "_").as_str() {
+        "speed" | "movement_speed"        => Some("SPEED"),
+        "slowness" | "movement_slowdown"  => Some("SLOWNESS"),
+        "haste" | "dig_speed"             => Some("HASTE"),
+        "mining_fatigue" | "dig_slowdown" => Some("MINING_FATIGUE"),
+        "strength" | "damage_boost"       => Some("STRENGTH"),
+        "instant_health" | "heal"         => Some("INSTANT_HEALTH"),
+        "instant_damage" | "harm"         => Some("INSTANT_DAMAGE"),
+        "jump_boost" | "jump"             => Some("JUMP_BOOST"),
+        "nausea" | "confusion"            => Some("NAUSEA"),
+        "regeneration"                    => Some("REGENERATION"),
+        "resistance" | "damage_resistance"=> Some("RESISTANCE"),
+        "fire_resistance"                 => Some("FIRE_RESISTANCE"),
+        "water_breathing"                 => Some("WATER_BREATHING"),
+        "invisibility"                    => Some("INVISIBILITY"),
+        "blindness"                       => Some("BLINDNESS"),
+        "night_vision"                    => Some("NIGHT_VISION"),
+        "hunger"                          => Some("HUNGER"),
+        "weakness"                        => Some("WEAKNESS"),
+        "poison"                          => Some("POISON"),
+        "wither"                          => Some("WITHER"),
+        "health_boost"                    => Some("HEALTH_BOOST"),
+        "absorption"                      => Some("ABSORPTION"),
+        "saturation"                      => Some("SATURATION"),
+        "levitation"                      => Some("LEVITATION"),
+        "luck"                            => Some("LUCK"),
+        "bad_luck" | "unluck"             => Some("UNLUCK"),
+        "slow_falling"                    => Some("SLOW_FALLING"),
+        "conduit_power"                   => Some("CONDUIT_POWER"),
+        "dolphins_grace"                  => Some("DOLPHINS_GRACE"),
+        "bad_omen"                        => Some("BAD_OMEN"),
+        "hero_of_the_village"             => Some("HERO_OF_THE_VILLAGE"),
+        "darkness"                        => Some("DARKNESS"),
+        _                                 => None,
+    }
+}
 
 fn with_env<F, T>(f: F) -> LuaResult<T>
 where

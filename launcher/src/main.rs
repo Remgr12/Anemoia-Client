@@ -2,7 +2,7 @@ use eframe::egui;
 use std::{
     path::PathBuf,
     process::{Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}},
     thread,
     time::Duration,
 };
@@ -39,6 +39,7 @@ struct LauncherApp {
 
     log_lines: Arc<Mutex<Vec<String>>>,
     last_log_refresh: std::time::Instant,
+    inject_success: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -73,6 +74,7 @@ impl LauncherApp {
             status_ok: true,
             log_lines: Arc::new(Mutex::new(vec![])),
             last_log_refresh: std::time::Instant::now(),
+            inject_success: Arc::new(AtomicBool::new(false)),
         };
         app.refresh_processes();
         app
@@ -148,8 +150,7 @@ impl LauncherApp {
         self.set_status(&format!("Injecting into PID {}...", pid), true);
 
         let log_ref = self.log_lines.clone();
-
-        // Copy paths so the thread owns them.
+        let success_flag = self.inject_success.clone();
         let injector_path = injector.clone();
 
         thread::spawn(move || {
@@ -170,6 +171,7 @@ impl LauncherApp {
                     }
                     if out.status.success() {
                         lines.push("[injector] OK".into());
+                        success_flag.store(true, Ordering::Relaxed);
                     } else {
                         lines.push(format!(
                             "[injector] exited with status {}",
@@ -209,6 +211,11 @@ impl LauncherApp {
 
 impl eframe::App for LauncherApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.inject_success.load(Ordering::Relaxed) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+
         self.refresh_client_log();
         ctx.request_repaint_after(Duration::from_millis(500));
 

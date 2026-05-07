@@ -4,7 +4,7 @@
 //! guaranteed to be current.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     ffi::CString,
     sync::{Arc, Mutex, OnceLock},
     sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering},
@@ -193,6 +193,14 @@ pub struct ClickGui {
     search_query: String,
     new_profile_buf: String,
 
+    // Category window persistence
+    folder_positions: HashMap<String, egui::Pos2>,
+    initialized_folders: HashSet<String>,
+
+    // Accent color (RGB)
+    accent_color: egui::Color32,
+    accent_rgb: [f32; 3],
+
     // Zulip connection config buffers (also used in global Settings panel)
     zulip_url_buf: String,
     zulip_email_buf: String,
@@ -314,6 +322,15 @@ impl ClickGui {
         // Hotkey thread shares the same Glfw handle and window pointer.
         // Hotkeys are now ticked synchronously in the frame loop.
 
+        let cfg = crate::config::get();
+        let folder_positions: HashMap<String, egui::Pos2> = cfg.folder_positions
+            .iter()
+            .map(|(k, v)| (k.clone(), egui::pos2(v[0], v[1])))
+            .collect();
+        let [ar, ag, ab] = cfg.accent_color;
+        let accent_color = egui::Color32::from_rgb(ar, ag, ab);
+        let accent_rgb = [ar as f32 / 255.0, ag as f32 / 255.0, ab as f32 / 255.0];
+
         Ok(ClickGui {
             ctx: Context::default(),
             painter,
@@ -322,7 +339,7 @@ impl ClickGui {
             window_ptr,
             start_time: std::time::Instant::now(),
             visible: false,
-            toggle_key: glfw::KEY_RIGHT_SHIFT,
+            toggle_key: cfg.gui_toggle_key,
             prev_toggle_state: false,
             binding: false,
             binding_module: None,
@@ -337,6 +354,10 @@ impl ClickGui {
             packet_mgr_open: false,
             search_query: String::new(),
             new_profile_buf: String::new(),
+            folder_positions,
+            initialized_folders: HashSet::new(),
+            accent_color,
+            accent_rgb,
             zulip_url_buf: String::new(),
             zulip_email_buf: String::new(),
             zulip_key_buf: String::new(),
@@ -351,10 +372,19 @@ impl ClickGui {
     }
 
     fn frame(&mut self) {
+        // When window leaves focus, hide the GUI cursor/overlay.
         if self.visible && !self.glfw.window_focused(self.window_ptr) {
             self.visible = false;
             GUI_VISIBLE.store(false, Ordering::Relaxed);
             self.glfw.hide_cursor(self.window_ptr);
+        }
+
+        // Skip ALL GL/egui work when not focused.  Running egui_glow inside
+        // glXSwapBuffers while the window is on another workspace causes the
+        // NVIDIA compositor to stall (visible as a freeze) and can corrupt the
+        // trampoline page boundary causing a SIGSEGV.
+        if !self.glfw.window_focused(self.window_ptr) {
+            return;
         }
 
         hotkeys::tick(&self.glfw, self.window_ptr);
@@ -580,6 +610,10 @@ impl ClickGui {
             GUI_VISIBLE.store(self.visible, Ordering::Relaxed);
             if !self.visible {
                 self.glfw.hide_cursor(self.window_ptr);
+                self.save_folder_positions();
+            } else {
+                // Re-opening: force egui to restore our saved positions on first frame
+                self.initialized_folders.clear();
             }
         }
         self.prev_toggle_state = pressed;
@@ -588,7 +622,29 @@ impl ClickGui {
             self.visible = false;
             GUI_VISIBLE.store(false, Ordering::Relaxed);
             self.glfw.hide_cursor(self.window_ptr);
+            self.save_folder_positions();
         }
+    }
+
+    fn save_folder_positions(&self) {
+        let positions: HashMap<String, [f32; 2]> = self.folder_positions
+            .iter()
+            .map(|(k, v)| (k.clone(), [v.x, v.y]))
+            .collect();
+        crate::config::modify(|c| c.folder_positions = positions);
+    }
+
+    fn reload_from_config(&mut self) {
+        let cfg = crate::config::get();
+        self.toggle_key = cfg.gui_toggle_key;
+        let [r, g, b] = cfg.accent_color;
+        self.accent_color = egui::Color32::from_rgb(r, g, b);
+        self.accent_rgb = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0];
+        self.folder_positions = cfg.folder_positions
+            .iter()
+            .map(|(k, v)| (k.clone(), egui::pos2(v[0], v[1])))
+            .collect();
+        self.initialized_folders.clear();
     }
 
     // ── UI ────────────────────────────────────────────────────────────────────
@@ -622,18 +678,34 @@ impl ClickGui {
 
         for (i, (cat_name, modules)) in categories.iter().enumerate() {
             let default_x = 10.0 + i as f32 * 175.0;
+            let default_pos = egui::pos2(default_x, 40.0);
+            let saved_pos = self.folder_positions.get(cat_name).copied();
+            // first_time == true means this is the first frame we see this window this session
+            let first_time = self.initialized_folders.insert(cat_name.clone());
 
-            egui::Window::new(cat_name.as_str())
+            let win = egui::Window::new(cat_name.as_str())
                 .id(egui::Id::new(format!("cat_{}", cat_name)))
-                .default_pos([default_x, 40.0])
                 .resizable(false)
-                .collapsible(true)
-                .show(ctx, |ui| {
-                    ui.set_min_width(160.0);
-                    for module in modules {
-                        self.draw_module_row(ui, module);
-                    }
-                });
+                .collapsible(true);
+
+            // On first appearance, force egui to use our saved position.
+            // After that, egui's own memory tracks drags; we just observe.
+            let win = if first_time {
+                win.current_pos(saved_pos.unwrap_or(default_pos))
+            } else {
+                win.default_pos(saved_pos.unwrap_or(default_pos))
+            };
+
+            let resp = win.show(ctx, |ui| {
+                ui.set_min_width(160.0);
+                for module in modules {
+                    self.draw_module_row(ui, module);
+                }
+            });
+
+            if let Some(ir) = resp {
+                self.folder_positions.insert(cat_name.clone(), ir.response.rect.min);
+            }
         }
     }
 
@@ -748,7 +820,7 @@ impl ClickGui {
                 ui.label(
                     egui::RichText::new("Anemoia")
                         .strong()
-                        .color(egui::Color32::from_rgb(180, 100, 255)),
+                        .color(self.accent_color),
                 );
                 ui.separator();
                 if ui.button("Settings").clicked() {
@@ -814,6 +886,15 @@ impl ClickGui {
                             self.binding = true;
                         }
                     });
+                    ui.separator();
+                    ui.label("Accent Color");
+                    if ui.color_edit_button_rgb(&mut self.accent_rgb).changed() {
+                        let r = (self.accent_rgb[0] * 255.0) as u8;
+                        let g = (self.accent_rgb[1] * 255.0) as u8;
+                        let b = (self.accent_rgb[2] * 255.0) as u8;
+                        self.accent_color = egui::Color32::from_rgb(r, g, b);
+                        crate::config::modify(|c| c.accent_color = [r, g, b]);
+                    }
                 });
 
                 ui.add_space(8.0);
@@ -831,19 +912,25 @@ impl ClickGui {
                                 for p in profiles {
                                     if ui.selectable_label(p == active_profile, &p).clicked() {
                                         crate::config::set_active_profile(&p);
-                                        // Update GUI toggle key since config changed
-                                        self.toggle_key = crate::config::get().gui_toggle_key;
+                                        self.reload_from_config();
+                                        if let Err(e) = crate::lua_engine::apply_config() {
+                                            log::warn!("apply_config after profile switch: {}", e);
+                                        }
                                     }
                                 }
                             });
                     });
-                    
+
                     ui.horizontal(|ui| {
                         ui.add(egui::TextEdit::singleline(&mut self.new_profile_buf).hint_text("New Profile Name..."));
                         if ui.button("Create").clicked() {
                             let name = self.new_profile_buf.trim().to_owned();
                             if !name.is_empty() {
                                 crate::config::set_active_profile(&name);
+                                self.reload_from_config();
+                                if let Err(e) = crate::lua_engine::apply_config() {
+                                    log::warn!("apply_config after profile create: {}", e);
+                                }
                                 self.new_profile_buf.clear();
                             }
                         }

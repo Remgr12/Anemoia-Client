@@ -59,6 +59,7 @@ pub fn init() -> Result<()> {
     SCRIPTS.get_or_init(|| Arc::new(Mutex::new(Vec::new())));
     RENDER_CALLBACKS.get_or_init(|| Arc::new(Mutex::new(Vec::new())));
     PACKET_SEND_CALLBACKS.get_or_init(|| Arc::new(Mutex::new(Vec::new())));
+    ZULIP_UI_CALLBACK.get_or_init(|| Arc::new(Mutex::new(None)));
 
     let lua = Lua::new();
     
@@ -97,7 +98,7 @@ pub fn init() -> Result<()> {
     Ok(())
 }
 
-fn apply_config() -> Result<()> {
+pub fn apply_config() -> Result<()> {
     let guard = LUA.get().unwrap().lock();
     let cfg = crate::config::get();
     
@@ -106,7 +107,10 @@ fn apply_config() -> Result<()> {
 
     for i in 1..=list.len()? {
         let module: LuaTable = list.get(i)?;
-        let name: String = module.get("name")?;
+        let name: String = match module.get("name") {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
 
         if let Some(&enabled) = cfg.module_enabled.get(&name) {
             let was: bool = module.get("enabled").unwrap_or(false);
@@ -267,6 +271,7 @@ pub fn on_render(painter: egui::Painter) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn on_zulip_ui(painter: egui::Painter) -> Result<()> {
     let guard = match LUA.get() {
         Some(m) => m.lock(),

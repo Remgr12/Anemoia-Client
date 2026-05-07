@@ -33,6 +33,19 @@ pub fn register(lua: &Lua) -> Result<()> {
     )?;
 
     mc.set(
+        "chat",
+        lua.create_function(|_, message: String| {
+            with_env(|env| {
+                let mc_obj = crate::mc::minecraft::Minecraft::get_instance(env)?
+                    .ok_or_else(|| anyhow::anyhow!("Minecraft not ready"))?;
+                let player = crate::mc::player::LocalPlayer::from_minecraft(&mc_obj, env)?
+                    .ok_or_else(|| anyhow::anyhow!("Player is null"))?;
+                player.send_chat(env, &message)
+            })
+        })?,
+    )?;
+
+    mc.set(
         "click",
         lua.create_function(|_, ()| {
             let jvm = crate::jvm::Jvm::get();

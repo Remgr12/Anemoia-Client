@@ -31,6 +31,8 @@ pub struct EntitySnapshot {
     pub type_id:        String,
     pub name:           String,
     pub is_local_player: bool,
+    /// Current health; 0.0 for non-living entities (items, arrows, etc.).
+    pub health:         f32,
 }
 
 /// mlua `UserData` wrapper around an `EntitySnapshot`.
@@ -116,7 +118,16 @@ unsafe fn extract_snapshot_fast(
 
         let is_local_player = env.is_instance_of(obj, &m.local_player_class)?;
 
-        Ok(EntitySnapshot { id, x, y, z, yaw, pitch, alive, type_id, name, is_local_player })
+        let health = if env.is_instance_of(obj, &m.living_entity_class).unwrap_or(false) {
+            match unsafe { env.call_method_unchecked(obj, m.entity_get_health, ReturnType::Primitive(Primitive::Float), &[]) } {
+                Ok(v) => v.f().unwrap_or(0.0),
+                Err(_) => { let _ = env.exception_clear(); 0.0 }
+            }
+        } else {
+            0.0
+        };
+
+        Ok(EntitySnapshot { id, x, y, z, yaw, pitch, alive, type_id, name, is_local_player, health })
     })();
 
     if env.exception_check().unwrap_or(false) {
@@ -154,7 +165,12 @@ fn extract_snapshot_slow(env: &mut JNIEnv, obj: &JObject<'_>) -> Result<EntitySn
         let lp_cls = crate::jvm::Jvm::find_class(env, paths::LOCAL_PLAYER)?;
         let is_local_player = env.is_instance_of(obj, &lp_cls)?;
 
-        Ok(EntitySnapshot { id, x, y, z, yaw, pitch, alive, type_id, name, is_local_player })
+        let health = match env.call_method(obj, "getHealth", "()F", &[]) {
+            Ok(v) => v.f().unwrap_or(0.0),
+            Err(_) => { let _ = env.exception_clear(); 0.0 }
+        };
+
+        Ok(EntitySnapshot { id, x, y, z, yaw, pitch, alive, type_id, name, is_local_player, health })
     })();
 
     if env.exception_check().unwrap_or(false) {

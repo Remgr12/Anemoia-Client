@@ -59,6 +59,8 @@ pub mod method_ids {
         pub entity_is_alive:  JMethodID,
         pub entity_get_type:  JMethodID,
         pub entity_get_name:  JMethodID,
+        // LivingEntity methods (only valid when is_instance_of living_entity_class)
+        pub entity_get_health:   JMethodID,
         // EntityType / Component
         pub entity_type_get_desc_id: JMethodID,
         pub component_get_string:    JMethodID,
@@ -68,7 +70,9 @@ pub mod method_ids {
         pub iter_next:            JMethodID,
         pub level_getter_get_all: JMethodID,
         /// Cached GlobalRef to LocalPlayer class — avoids repeated find_class in is_instance_of.
-        pub local_player_class: GlobalRef,
+        pub local_player_class:    GlobalRef,
+        /// Cached GlobalRef to LivingEntity class — for health instanceof check.
+        pub living_entity_class:   GlobalRef,
     }
 
     // Safety: JMethodID is a raw pointer into the JVM method table. Method IDs are
@@ -108,13 +112,14 @@ pub mod method_ids {
         use super::paths;
         let jvm = crate::jvm::Jvm::find_class;
 
-        let entity_cls      = jvm(env, paths::ENTITY)?;
-        let entity_type_cls = jvm(env, paths::ENTITY_TYPE)?;
-        let component_cls   = jvm(env, paths::COMPONENT)?;
-        let iterable_cls    = jvm(env, "java/lang/Iterable")?;
-        let iter_cls        = jvm(env, "java/util/Iterator")?;
-        let getter_cls      = jvm(env, paths::LEVEL_ENTITY_GETTER)?;
-        let lp_cls          = jvm(env, paths::LOCAL_PLAYER)?;
+        let entity_cls         = jvm(env, paths::ENTITY)?;
+        let living_entity_cls  = jvm(env, paths::LIVING_ENTITY)?;
+        let entity_type_cls    = jvm(env, paths::ENTITY_TYPE)?;
+        let component_cls      = jvm(env, paths::COMPONENT)?;
+        let iterable_cls       = jvm(env, "java/lang/Iterable")?;
+        let iter_cls           = jvm(env, "java/util/Iterator")?;
+        let getter_cls         = jvm(env, paths::LEVEL_ENTITY_GETTER)?;
+        let lp_cls             = jvm(env, paths::LOCAL_PLAYER)?;
 
         let ids = MethodIds {
             entity_get_id:    env.get_method_id(&entity_cls, "getId",    "()I")?,
@@ -129,6 +134,8 @@ pub mod method_ids {
             entity_get_name:  env.get_method_id(&entity_cls, "getName",
                 "()Lnet/minecraft/network/chat/Component;")?,
 
+            entity_get_health: env.get_method_id(&living_entity_cls, "getHealth", "()F")?,
+
             entity_type_get_desc_id: env.get_method_id(
                 &entity_type_cls, "getDescriptionId", "()Ljava/lang/String;")?,
             component_get_string: env.get_method_id(
@@ -142,7 +149,8 @@ pub mod method_ids {
             level_getter_get_all: env.get_method_id(
                 &getter_cls, "getAll", "()Ljava/lang/Iterable;")?,
 
-            local_player_class: env.new_global_ref(&lp_cls)?,
+            local_player_class:  env.new_global_ref(&lp_cls)?,
+            living_entity_class: env.new_global_ref(&living_entity_cls)?,
         };
 
         Ok(ids)

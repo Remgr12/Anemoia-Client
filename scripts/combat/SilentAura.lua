@@ -41,7 +41,7 @@ function module:on_tick()
                 valid = true
             elseif filter == "Players" and tid:find("player") then
                 valid = true
-            elseif filter == "Mobs" and (tid:find("zombie") or tid:find("skeleton") or tid:find("creeper") or tid:find("spider")) then
+            elseif filter == "Mobs" and not tid:find("player") then
                 valid = true
             end
 
@@ -56,17 +56,18 @@ function module:on_tick()
     end
 
     if best_target then
-        -- Silent rotation: save, rotate, attack, restore
         local old_yaw = player:yaw()
         local old_pitch = player:pitch()
-        
-        self:rotate(player, px, py, pz, best_target)
-        
-        mc.attack(best_target)
-        
+
+        pcall(function()
+            self:rotate(player, px, py, pz, best_target)
+            mc.attack(best_target)
+        end)
+
+        -- Always restore — even if rotate or attack errored
         player:set_yaw(old_yaw)
         player:set_pitch(old_pitch)
-        
+
         self.last_attack = now
     end
 end

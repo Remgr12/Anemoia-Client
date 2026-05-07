@@ -4,23 +4,41 @@ local module = {
     category = "Misc",
     enabled = false,
     settings = {
-        poll_rate = 2.0,
-        bridge_out = true,   -- Send MC chat to Zulip
-        bridge_in  = true,   -- Show Zulip messages in MC chat
+        poll_rate  = 2.0,
+        bridge_out = true,
+        bridge_in  = true,
     },
-    last_msgs = {},
-    -- Track which stream/topic to mirror into MC chat (defaults to configured stream/topic)
+    last_msgs     = {},
     mirror_stream = "",
     mirror_topic  = "",
+    _last_poll_rate = nil,
 }
 
-function module:on_tick()
+function module:on_enable()
+    self.last_msgs = {}
+    self._last_poll_rate = self.settings.poll_rate
     anemoia.zulip_config({
-        enabled    = self.enabled,
-        poll_rate  = self.settings.poll_rate,
+        enabled   = true,
+        poll_rate = self.settings.poll_rate,
     })
+    anemoia.zulip_clear()
+end
 
-    if not self.enabled or not self.settings.bridge_in then return end
+function module:on_disable()
+    anemoia.zulip_config({ enabled = false })
+    self._last_poll_rate = nil
+end
+
+function module:on_tick()
+    if not self.enabled then return end
+
+    -- Only write to disk when poll_rate actually changes (was: every tick = 60 disk writes/sec).
+    if self._last_poll_rate ~= self.settings.poll_rate then
+        self._last_poll_rate = self.settings.poll_rate
+        anemoia.zulip_config({ enabled = true, poll_rate = self.settings.poll_rate })
+    end
+
+    if not self.settings.bridge_in then return end
 
     local messages = anemoia.zulip_get_messages()
     if #messages == 0 then return end
@@ -29,7 +47,6 @@ function module:on_tick()
     if not player then return end
 
     for _, msg in ipairs(messages) do
-        -- Only mirror messages from the configured stream/topic
         if self.mirror_stream ~= "" and msg.stream ~= self.mirror_stream then goto continue end
         if self.mirror_topic  ~= "" and msg.topic  ~= self.mirror_topic  then goto continue end
 
@@ -46,17 +63,6 @@ function module:on_tick()
         ::continue::
     end
 end
-
-function module:on_enable()
-    self.last_msgs = {}
-    anemoia.zulip_clear()
-end
-
-function module:on_disable()
-    anemoia.zulip_config({ enabled = false })
-end
-
--- ── . command handler ──────────────────────────────────────────────────────────
 
 local function cmd_help(player)
     player:display_message("§e§lZulip commands§r §7(.prefix)")
@@ -90,10 +96,8 @@ local function handle_dot_cmd(raw, player)
             player:display_message("§cUsage: .stream <stream> <topic>")
             return true
         end
-        local stream = parts[2]
-        local topic  = table.concat(parts, " ", 3)
-        anemoia.zulip_config({ stream = stream, topic = topic })
-        player:display_message("§aTarget: §f" .. stream .. " › " .. topic)
+        anemoia.zulip_config({ stream = parts[2], topic = table.concat(parts, " ", 3) })
+        player:display_message("§aTarget: §f" .. parts[2] .. " › " .. table.concat(parts, " ", 3))
         return true
 
     elseif sub == "mirror" then
@@ -107,8 +111,8 @@ local function handle_dot_cmd(raw, player)
         return true
 
     elseif sub == "status" then
-        local enabled_str = module.enabled and "§aenabled" or "§cdisabled"
-        player:display_message("§eBridge: " .. enabled_str)
+        local en = module.enabled and "§aenabled" or "§cdisabled"
+        player:display_message("§eBridge: " .. en)
         if module.mirror_stream ~= "" then
             player:display_message("§eMirror: §f" .. module.mirror_stream .. " › " .. module.mirror_topic)
         else
@@ -131,8 +135,6 @@ local function handle_dot_cmd(raw, player)
     return false
 end
 
--- ── Packet hook ────────────────────────────────────────────────────────────────
-
 anemoia.on_packet_send(function(packet)
     local ptype = packet:type_name()
     if not ptype:find("ServerboundChatPacket") then return false end
@@ -141,21 +143,19 @@ anemoia.on_packet_send(function(packet)
     local msg = fields.message
     if not msg or msg == "" then return false end
 
-    -- Intercept . commands
     if msg:sub(1, 1) == "." then
         local player = mc.player()
         if player then
             local handled = handle_dot_cmd(msg:sub(2), player)
-            if handled then return true end  -- cancel packet
+            if handled then return true end
         end
     end
 
-    -- Bridge outgoing MC chat to Zulip
     if module.enabled and module.settings.bridge_out then
         anemoia.zulip_send(msg)
     end
 
-    return false  -- don't cancel
+    return false
 end)
 
 anemoia.register(module)

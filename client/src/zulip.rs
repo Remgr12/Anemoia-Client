@@ -297,7 +297,7 @@ pub fn fetch_topics(stream_id: u64) {
 
 fn fetch_topics_impl(url: &str, auth: &str, stream_id: u64) -> anyhow::Result<Vec<String>> {
     let res = ureq::get(&format!(
-        "{}/api/v1/users/me/subscriptions/topics?stream_id={}",
+        "{}/api/v1/users/me/{}/topics",
         url, stream_id
     ))
     .set("Authorization", &format!("Basic {}", auth))
@@ -530,7 +530,7 @@ fn poll_step(state: &Arc<Mutex<ZulipState>>) -> anyhow::Result<()> {
     }
 
     let poll_url = format!(
-        "{}/api/v1/events?queue_id={}&last_event_id={}",
+        "{}/api/v1/events?queue_id={}&last_event_id={}&dont_block=true",
         url,
         queue_id.unwrap(),
         last_event_id
@@ -560,7 +560,7 @@ fn poll_step(state: &Arc<Mutex<ZulipState>>) -> anyhow::Result<()> {
                                 id: msg["id"].as_u64().unwrap_or(0),
                                 sender: msg["sender_full_name"].as_str().unwrap_or("?").to_string(),
                                 content,
-                                time: chrono::Local::now().format("%H:%M").to_string(),
+                                time: fmt_ts(msg["timestamp"].as_i64().unwrap_or(0)),
                                 stream: stream.clone(),
                                 topic: topic.clone(),
                                 image_urls,

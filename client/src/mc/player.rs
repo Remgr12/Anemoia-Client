@@ -278,10 +278,51 @@ impl LocalPlayer {
     }
 
     pub fn is_in_web(&self, env: &mut JNIEnv) -> Result<bool> {
-        // In modern MC, this is often a field or a check in movement logic.
-        // Let's check the field 'sticking' or similar, or just check the block under feet.
-        // For simplicity, let's assume there is a field or we check block.
-        Ok(env.get_field(self.jni_ref.as_obj(), "wasInPowderSnow", "Z")?.z()?)
+        match env.get_field(self.jni_ref.as_obj(), "inWebOrSweetBerryBush", "Z") {
+            Ok(v) => Ok(v.z().unwrap_or(false)),
+            Err(_) => { let _ = env.exception_clear(); Ok(false) }
+        }
+    }
+
+    pub fn get_health(&self, env: &mut JNIEnv) -> Result<f32> {
+        Ok(env.call_method(self.jni_ref.as_obj(), "getHealth", "()F", &[])?.f()?)
+    }
+
+    pub fn get_max_health(&self, env: &mut JNIEnv) -> Result<f32> {
+        Ok(env.call_method(self.jni_ref.as_obj(), "getMaxHealth", "()F", &[])?.f()?)
+    }
+
+    pub fn get_absorption_amount(&self, env: &mut JNIEnv) -> Result<f32> {
+        Ok(env.call_method(self.jni_ref.as_obj(), "getAbsorptionAmount", "()F", &[])?.f()?)
+    }
+
+    pub fn swing_arm(&self, env: &mut JNIEnv, hand: &str) -> Result<()> {
+        let hand_cls = crate::jvm::Jvm::find_class(env, "net/minecraft/world/InteractionHand")?;
+        let hand_field = if hand.eq_ignore_ascii_case("OFF_HAND") { "OFF_HAND" } else { "MAIN_HAND" };
+        let hand_obj = env.get_static_field(hand_cls, hand_field, "Lnet/minecraft/world/InteractionHand;")?.l()?;
+        env.call_method(
+            self.jni_ref.as_obj(),
+            "swing",
+            "(Lnet/minecraft/world/InteractionHand;)V",
+            &[jni::objects::JValue::Object(&hand_obj)],
+        )?;
+        Ok(())
+    }
+
+    pub fn send_chat(&self, env: &mut JNIEnv, message: &str) -> Result<()> {
+        let listener_obj = env.get_field(
+            self.jni_ref.as_obj(),
+            "connection",
+            "Lnet/minecraft/client/multiplayer/ClientPacketListener;",
+        )?.l()?;
+        let msg_jstr = env.new_string(message)?;
+        env.call_method(
+            &listener_obj,
+            "sendChat",
+            "(Ljava/lang/String;)V",
+            &[jni::objects::JValue::Object(&msg_jstr.into())],
+        )?;
+        Ok(())
     }
 
     pub fn remove_effect(&self, env: &mut JNIEnv, effect_obj: jni::objects::JObject) -> Result<()> {

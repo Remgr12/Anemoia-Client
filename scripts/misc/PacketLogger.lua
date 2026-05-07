@@ -1,30 +1,45 @@
 local module = {
     name = "PacketLogger",
-    description = "Logs outgoing packets and allows cancellation",
+    description = "Logs outgoing packets to chat HUD and allows cancellation",
     category = "Misc",
     enabled = false,
     settings = {
         cancel_movement = false,
-    }
+        log_packets     = true,
+    },
+    _queue = {},
 }
+
+function module:on_tick()
+    if not self.enabled or not self.settings.log_packets then
+        self._queue = {}
+        return
+    end
+    if #self._queue == 0 then return end
+
+    -- Drain one queued name per tick so the chat HUD isn't flooded.
+    local player = mc.player()
+    if not player then return end
+    player:display_message("§8[Pkt] §7" .. table.remove(self._queue, 1))
+end
 
 anemoia.on_packet_send(function(packet)
     if not module.enabled then return false end
-    
+
     local name = packet:type_name()
-    
-    -- Check if it's a movement packet
-    if name:find("ServerboundMovePlayerPacket") then
-        if module.settings.cancel_movement then
-            return true -- Cancel the packet!
+    local is_movement = name:find("MovePlayer") ~= nil
+
+    if is_movement and module.settings.cancel_movement then
+        return true
+    end
+
+    if module.settings.log_packets and not is_movement then
+        local short = name:match("([^%.]+)$") or name
+        if #module._queue < 20 then
+            table.insert(module._queue, short)
         end
     end
-    
-    -- Logging (only for non-movement to avoid spam)
-    if not name:find("MovePlayer") then
-        -- We don't have a print to console yet, but we could add one
-    end
-    
+
     return false
 end)
 

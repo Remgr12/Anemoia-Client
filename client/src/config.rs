@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::OnceLock;
-use log::{info, warn, error};
+use log::{warn, error};
 
 use crate::zulip::ZulipConfig;
 
@@ -16,7 +16,7 @@ pub struct AppConfig {
     pub zulip: ZulipConfig,
     #[serde(default)]
     pub loaded_scripts: Vec<String>,
-    
+
     // module_name -> setting_name -> setting_value
     #[serde(default)]
     pub module_settings: HashMap<String, HashMap<String, serde_json::Value>>,
@@ -24,6 +24,14 @@ pub struct AppConfig {
     pub module_enabled: HashMap<String, bool>,
     #[serde(default)]
     pub module_keys: HashMap<String, i32>,
+
+    // category_name -> [x, y] screen position
+    #[serde(default)]
+    pub folder_positions: HashMap<String, [f32; 2]>,
+
+    // RGB accent color [r, g, b] in 0-255
+    #[serde(default = "default_accent_color")]
+    pub accent_color: [u8; 3],
 }
 
 impl Default for AppConfig {
@@ -35,12 +43,18 @@ impl Default for AppConfig {
             module_settings: Default::default(),
             module_enabled: Default::default(),
             module_keys: Default::default(),
+            folder_positions: Default::default(),
+            accent_color: default_accent_color(),
         }
     }
 }
 
 fn default_toggle_key() -> i32 {
     crate::glfw::KEY_RIGHT_SHIFT // 344
+}
+
+fn default_accent_color() -> [u8; 3] {
+    [180, 100, 255]
 }
 
 static CONFIG: OnceLock<Mutex<AppConfig>> = OnceLock::new();

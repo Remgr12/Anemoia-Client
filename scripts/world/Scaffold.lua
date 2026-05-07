@@ -70,8 +70,8 @@ function module:on_tick()
     if not ok_chk or empty then return end
     if not tid:find("block") then return end
 
-    -- rotate looking down so server sees a reasonable rotation
-    if self.settings.rotations then
+    local old_pitch = self.settings.rotations and player:pitch() or nil
+    if old_pitch then
         pcall(function() player:set_pitch(80) end)
     end
 
@@ -81,16 +81,12 @@ function module:on_tick()
         local ntid = safe_block(nx, ny, nz)
         if is_solid(ntid) then
             pcall(mc.place_block, nx, ny, nz, n.face)
-            return
+            break
         end
     end
-end
 
-function module:on_disable()
-    -- restore pitch when disabling
-    local player = mc.player()
-    if player then
-        pcall(function() player:set_pitch(0) end)
+    if old_pitch then
+        pcall(function() player:set_pitch(old_pitch) end)
     end
 end
 

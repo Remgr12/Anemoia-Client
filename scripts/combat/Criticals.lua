@@ -11,15 +11,6 @@ local module = {
     }
 }
 
-anemoia.on_packet_send(function(packet)
-    if not module.enabled then return end
-    
-    -- We can't easily check packet type by name yet in a fast way,
-    -- but usually attack packets are what we want to hook.
-    -- For now, let's use a simpler on_tick approach for Criticals
-    -- that spoofs position when attacking.
-end)
-
 function module:on_tick()
     local player = mc.player()
     if not player then return end

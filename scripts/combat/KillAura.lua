@@ -21,19 +21,10 @@ local module = {
     _cur_pitch   = 0.0,
 }
 
-local MOB_IDS = {
-    "zombie", "skeleton", "creeper", "spider",
-    "enderman", "witch", "pillager", "blaze", "ghast",
-}
-
 local function is_valid_target(filter, type_id)
-    if filter == "All" then return true end
+    if filter == "All"     then return true end
     if filter == "Players" then return type_id:find("player") ~= nil end
-    if filter == "Mobs" then
-        for _, mob in ipairs(MOB_IDS) do
-            if type_id:find(mob) then return true end
-        end
-    end
+    if filter == "Mobs"    then return type_id:find("player") == nil end
     return false
 end
 
