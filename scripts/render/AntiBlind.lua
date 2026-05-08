@@ -9,8 +9,9 @@ function module:on_tick()
     local player = mc.player()
     if not player then return end
 
-    if player:has_effect("blindness") then
-        player:remove_effect("blindness")
+    local ok, has = pcall(function() return player:has_effect("blindness") end)
+    if ok and has then
+        pcall(function() player:remove_effect("blindness") end)
     end
 end
 

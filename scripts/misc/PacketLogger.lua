@@ -3,6 +3,7 @@ local module = {
     description = "Logs outgoing packets to chat HUD and allows cancellation",
     category = "Misc",
     enabled = false,
+    hidden = true,
     settings = {
         cancel_movement = false,
         log_packets     = true,

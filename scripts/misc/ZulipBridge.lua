@@ -3,6 +3,7 @@ local module = {
     description = "Bridges Zulip chat into Minecraft. Use .help in chat for commands.",
     category = "Misc",
     enabled = false,
+    hidden = true,
     settings = {
         poll_rate  = 2.0,
         bridge_out = true,

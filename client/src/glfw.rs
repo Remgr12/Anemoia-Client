@@ -61,7 +61,20 @@ pub struct Glfw {
 unsafe impl Send for Glfw {}
 unsafe impl Sync for Glfw {}
 
+static GLFW: std::sync::OnceLock<Arc<Glfw>> = std::sync::OnceLock::new();
+
 impl Glfw {
+    /// Returns the cached Glfw handle, loading it once if needed.
+    /// Subsequent calls are a single pointer comparison — no dlsym.
+    pub fn get() -> anyhow::Result<Arc<Self>> {
+        if let Some(g) = GLFW.get() {
+            return Ok(g.clone());
+        }
+        let g = unsafe { Self::load()? };
+        let _ = GLFW.set(g);
+        Ok(GLFW.get().unwrap().clone())
+    }
+
     pub unsafe fn load() -> anyhow::Result<Arc<Self>> {
         macro_rules! sym {
             ($name:literal) => {{

@@ -142,7 +142,10 @@ where
     let mut env = Jvm::get()
         .attach()
         .map_err(|e| LuaError::runtime(e.to_string()))?;
-    f(&mut env).map_err(|e| LuaError::runtime(e.to_string()))
+    f(&mut env).map_err(|e| {
+        let _ = env.exception_clear();
+        LuaError::runtime(e.to_string())
+    })
 }
 
 fn lerr(e: impl std::fmt::Display) -> LuaError {

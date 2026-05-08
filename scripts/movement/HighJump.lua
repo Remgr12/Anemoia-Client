@@ -15,12 +15,15 @@ function module:on_tick()
     local player = mc.player()
     if not player then return end
 
-    local vx, vy, vz = table.unpack(player:velocity())
-    if vy > 0 and not player:on_ground() then
-        -- If we just jumped (vy is roughly 0.42 in vanilla)
-        if math.abs(vy - 0.42) < 0.01 then
-            player:set_velocity(vx, self.settings.velocity, vz)
-        end
+    local ok_vel, vel = pcall(function() return player:velocity() end)
+    if not ok_vel then return end
+    local vx, vy, vz = table.unpack(vel)
+
+    local ok_g, on_ground = pcall(function() return player:on_ground() end)
+    if not ok_g or on_ground then return end
+
+    if vy > 0 and math.abs(vy - 0.42) < 0.01 then
+        pcall(function() player:set_velocity(vx, self.settings.velocity, vz) end)
     end
 end
 

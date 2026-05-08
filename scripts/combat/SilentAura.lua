@@ -25,7 +25,11 @@ function module:on_tick()
         return
     end
 
-    local px, py, pz = player:x(), player:y() + 1.62, player:z()
+    local ok_pos, px, py, pz = pcall(function()
+        return player:x(), player:y() + 1.62, player:z()
+    end)
+    if not ok_pos then return end
+
     local entities = mc.entities()
     
     local best_target = nil
@@ -56,8 +60,10 @@ function module:on_tick()
     end
 
     if best_target then
-        local old_yaw = player:yaw()
-        local old_pitch = player:pitch()
+        local ok_rot, old_yaw, old_pitch = pcall(function()
+            return player:yaw(), player:pitch()
+        end)
+        if not ok_rot then return end
 
         pcall(function()
             self:rotate(player, px, py, pz, best_target)
@@ -65,8 +71,10 @@ function module:on_tick()
         end)
 
         -- Always restore — even if rotate or attack errored
-        player:set_yaw(old_yaw)
-        player:set_pitch(old_pitch)
+        pcall(function()
+            player:set_yaw(old_yaw)
+            player:set_pitch(old_pitch)
+        end)
 
         self.last_attack = now
     end

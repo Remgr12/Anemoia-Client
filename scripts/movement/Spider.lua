@@ -9,11 +9,14 @@ function module:on_tick()
     local player = mc.player()
     if not player then return end
 
-    if player:is_collided_horizontally() then -- Wait, we need collided horizontally!
-        local vx, vy, vz = table.unpack(player:velocity())
-        if vy < 0.15 then
-            player:set_velocity(vx, 0.15, vz)
-        end
+    local ok_col, collided = pcall(function() return player:is_collided_horizontally() end)
+    if not ok_col or not collided then return end
+
+    local ok_vel, vel = pcall(function() return player:velocity() end)
+    if not ok_vel then return end
+    local vx, vy, vz = table.unpack(vel)
+    if vy < 0.15 then
+        pcall(function() player:set_velocity(vx, 0.15, vz) end)
     end
 end
 

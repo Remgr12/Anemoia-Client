@@ -9,10 +9,13 @@ function module:on_tick()
     local player = mc.player()
     if not player then return end
 
-    if player:is_in_web() then
-        local vx, vy, vz = table.unpack(player:velocity())
-        player:set_velocity(vx * 5.0, vy, vz * 5.0)
-    end
+    local ok_web, in_web = pcall(function() return player:is_in_web() end)
+    if not ok_web or not in_web then return end
+
+    local ok_vel, vel = pcall(function() return player:velocity() end)
+    if not ok_vel then return end
+    local vx, vy, vz = table.unpack(vel)
+    pcall(function() player:set_velocity(vx * 5.0, vy, vz * 5.0) end)
 end
 
 anemoia.register(module)

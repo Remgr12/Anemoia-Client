@@ -9,65 +9,69 @@ local module = {
         opacity = 150,
     },
     _settings_meta = {
-        size = { min = 50, max = 500 },
-        range = { min = 10, max = 250 },
-        opacity = { min = 0, max = 255 }
-    }
+        size    = { min = 50,  max = 500 },
+        range   = { min = 10,  max = 250 },
+        opacity = { min = 0,   max = 255 },
+    },
+    _cache = { px = 0, pz = 0, yaw = 0, entities = {} },
 }
 
-anemoia.on_render(function(painter)
-    if not module.enabled then return end
+-- Populate cache on the tick thread (all JNI here; none in on_render).
+function module:on_tick()
+    self._cache = { px = 0, pz = 0, yaw = 0, entities = {} }
+    if not self.enabled then return end
 
     local player = mc.player()
     if not player then return end
 
-    local px, py, pz = player:x(), player:y(), player:z()
-    local yaw = player:yaw()
-    
-    local size = module.settings.size
-    local range = module.settings.range
+    local ok, px, pz, yaw = pcall(function()
+        return player:x(), player:z(), player:yaw()
+    end)
+    if not ok then return end
+
+    self._cache.px       = px
+    self._cache.pz       = pz
+    self._cache.yaw      = yaw
+    self._cache.entities = mc.entities()
+end
+
+anemoia.on_render(function(painter)
+    if not module.enabled then return end
+    local cache = module._cache
+    if #cache.entities == 0 and cache.px == 0 then return end
+
+    local size    = module.settings.size
+    local range   = module.settings.range
     local opacity = module.settings.opacity
-    
-    -- Radar background (top right)
+    local px, pz  = cache.px, cache.pz
+    local yaw     = cache.yaw
+
     local rx, ry = 10, 10
     painter:rect(rx, ry, size, size, 0, 0, 0, opacity, 5)
     painter:rect_outline(rx, ry, size, size, 255, 255, 255, 200, 1, 5)
-    
-    -- Center (Player)
-    local cx, cy = rx + size/2, ry + size/2
+
+    local cx, cy = rx + size / 2, ry + size / 2
     painter:rect(cx - 2, cy - 2, 4, 4, 255, 255, 255, 255, 0)
 
-    local entities = mc.entities()
-    for _, entity in ipairs(entities) do
+    -- Entity blips (entity:* methods are pure Rust snapshots — no JNI)
+    local angle = math.rad(yaw)
+    local cos_a = math.cos(angle)
+    local sin_a = math.sin(angle)
+    local scale = (size / 2) / range
+    local half  = size / 2
+
+    for _, entity in ipairs(cache.entities) do
         if entity:alive() and not entity:is_local_player() then
-            local ex, ey, ez = entity:x(), entity:y(), entity:z()
-            
-            local dx = ex - px
-            local dz = ez - pz
-            
-            -- Rotate according to player yaw
-            local angle = math.rad(yaw)
-            local cos = math.cos(angle)
-            local sin = math.sin(angle)
-            
-            local nx = dz * sin + dx * cos
-            local ny = dz * cos - dx * sin
-            
-            -- Scale to radar size
-            local scale = (size / 2) / range
-            nx = nx * scale
-            ny = ny * scale
-            
-            -- Clamp to radar bounds
-            if math.abs(nx) < size/2 and math.abs(ny) < size/2 then
-                local tx, ty = cx + nx, cy + ny
-                
+            local dx = entity:x() - px
+            local dz = entity:z() - pz
+
+            local nx = (dz * sin_a + dx * cos_a) * scale
+            local ny = (dz * cos_a - dx * sin_a) * scale
+
+            if math.abs(nx) < half and math.abs(ny) < half then
                 local r, g, b = 0, 255, 0
-                if entity:type_id():find("player") then
-                    r, g, b = 255, 0, 0
-                end
-                
-                painter:rect(tx - 2, ty - 2, 4, 4, r, g, b, 255, 0)
+                if entity:type_id():find("player") then r, g, b = 255, 0, 0 end
+                painter:rect(cx + nx - 2, cy + ny - 2, 4, 4, r, g, b, 255, 0)
             end
         end
     end

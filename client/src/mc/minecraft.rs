@@ -72,10 +72,20 @@ impl Minecraft {
     }
 
     pub fn get_right_click_delay_timer(&self, env: &mut JNIEnv) -> Result<i32> {
+        // Field was renamed between MC versions: try new name first, fall back to old
+        match env.get_field(self.jni_ref.as_obj(), "rightClickDelay", "I") {
+            Ok(v) => return Ok(v.i()?),
+            Err(_) => { let _ = env.exception_clear(); }
+        }
         Ok(env.get_field(self.jni_ref.as_obj(), "rightClickDelayTimer", "I")?.i()?)
     }
 
     pub fn set_right_click_delay_timer(&self, env: &mut JNIEnv, value: i32) -> Result<()> {
+        let val = jni::objects::JValue::Int(value);
+        if env.set_field(self.jni_ref.as_obj(), "rightClickDelay", "I", val).is_ok() {
+            return Ok(());
+        }
+        let _ = env.exception_clear();
         env.set_field(self.jni_ref.as_obj(), "rightClickDelayTimer", "I", jni::objects::JValue::Int(value))?;
         Ok(())
     }
@@ -179,19 +189,25 @@ impl Minecraft {
         result
     }
 
-    pub fn inventory_click(&self, env: &mut JNIEnv, container_id: i32, slot: i32, _button: i32, click_type: &str) -> Result<()> {
+    pub fn inventory_click(&self, env: &mut JNIEnv, container_id: i32, slot: i32, button: i32, click_type: &str) -> Result<()> {
         let gamemode = env.get_field(self.jni_ref.as_obj(), "gameMode", "Lnet/minecraft/client/multiplayer/MultiPlayerGameMode;")?.l()?;
         let click_type_cls = crate::jvm::Jvm::find_class(env, "net/minecraft/world/inventory/ClickType")?;
         let click_type_obj = env.get_static_field(click_type_cls, click_type, "Lnet/minecraft/world/inventory/ClickType;")?.l()?;
-        
+
         let player = env.get_field(self.jni_ref.as_obj(), "player", "Lnet/minecraft/client/player/LocalPlayer;")?.l()?;
 
-        env.call_method(&gamemode, "handleInventoryMouseClick", "(IILnet/minecraft/world/inventory/ClickType;Lnet/minecraft/world/entity/player/Player;)V", &[
-            jni::objects::JValue::Int(container_id),
-            jni::objects::JValue::Int(slot),
-            jni::objects::JValue::Object(&click_type_obj),
-            jni::objects::JValue::Object(&player),
-        ])?;
+        env.call_method(
+            &gamemode,
+            "handleInventoryMouseClick",
+            "(IIILnet/minecraft/world/inventory/ClickType;Lnet/minecraft/world/entity/player/Player;)V",
+            &[
+                jni::objects::JValue::Int(container_id),
+                jni::objects::JValue::Int(slot),
+                jni::objects::JValue::Int(button),
+                jni::objects::JValue::Object(&click_type_obj),
+                jni::objects::JValue::Object(&player),
+            ],
+        )?;
         Ok(())
     }
 }

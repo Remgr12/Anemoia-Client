@@ -115,11 +115,18 @@ fn inject_inner(env: &mut JNIEnv) -> Result<bool> {
 
     env.register_native_methods(
         &interceptor_cls,
-        &[NativeMethod {
-            name: "onIncoming".into(),
-            sig: "(Ljava/lang/Object;)V".into(),
-            fn_ptr: on_incoming_native as *mut std::ffi::c_void,
-        }],
+        &[
+            NativeMethod {
+                name: "onIncoming".into(),
+                sig: "(Ljava/lang/Object;)V".into(),
+                fn_ptr: on_incoming_native as *mut std::ffi::c_void,
+            },
+            NativeMethod {
+                name: "onOutgoing".into(),
+                sig: "(Ljava/lang/Object;)Z".into(),
+                fn_ptr: on_outgoing_native as *mut std::ffi::c_void,
+            },
+        ],
     )?;
 
     let instance = env.new_object(&interceptor_cls, "()V", &[])?;
@@ -132,12 +139,33 @@ fn inject_inner(env: &mut JNIEnv) -> Result<bool> {
 
     let handler_name = env.new_string("anemoia_interceptor")?;
     let handler_name_obj: JObject = handler_name.into();
-    env.call_method(
+
+    // Try to insert after "decoder" (post-decode position, sees MC packet objects).
+    // Falls back to addLast if "decoder" handler not present.
+    let after_name = env.new_string("decoder")?;
+    let after_name_obj: JObject = after_name.into();
+    let added_after = env.call_method(
         &pipeline,
-        "addFirst",
-        "(Ljava/lang/String;Lio/netty/channel/ChannelHandler;)Lio/netty/channel/ChannelPipeline;",
-        &[JValue::Object(&handler_name_obj), JValue::Object(&instance)],
-    )?;
+        "addAfter",
+        "(Ljava/lang/String;Ljava/lang/String;Lio/netty/channel/ChannelHandler;)Lio/netty/channel/ChannelPipeline;",
+        &[
+            JValue::Object(&after_name_obj),
+            JValue::Object(&handler_name_obj),
+            JValue::Object(&instance),
+        ],
+    );
+    if added_after.is_err() {
+        let _ = env.exception_clear();
+        // decoder not found — fall back to addLast (still after raw-byte handlers)
+        let handler_name2 = env.new_string("anemoia_interceptor")?;
+        let handler_name2_obj: JObject = handler_name2.into();
+        env.call_method(
+            &pipeline,
+            "addLast",
+            "(Ljava/lang/String;Lio/netty/channel/ChannelHandler;)Lio/netty/channel/ChannelPipeline;",
+            &[JValue::Object(&handler_name2_obj), JValue::Object(&instance)],
+        )?;
+    }
 
     Ok(true)
 }
@@ -215,4 +243,56 @@ unsafe extern "C" fn on_incoming_native(
     };
 
     crate::packet_capture::push_in(type_name, global_ref);
+}
+
+#[cfg(incoming_capture)]
+unsafe extern "C" fn on_outgoing_native(
+    raw_env: *mut jni::sys::JNIEnv,
+    _class: jni::sys::jclass,
+    packet: jni::sys::jobject,
+) -> jni::sys::jboolean {
+    let mut env = match JNIEnv::from_raw(raw_env) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+    let packet_obj = JObject::from_raw(packet);
+
+    // Get type name
+    let cls = match env.get_object_class(&packet_obj) {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+    let name_jstr = match env
+        .call_method(&cls, "getName", "()Ljava/lang/String;", &[])
+        .and_then(|v| v.l())
+    {
+        Ok(o) if !o.is_null() => o,
+        _ => return 0,
+    };
+    let type_name: String = match env.get_string((&name_jstr).into()) {
+        Ok(s) => s.into(),
+        Err(_) => return 0,
+    };
+
+    // Check if this packet was sent by Lua (bypass flag)
+    if crate::mc::packet::is_lua_send(&mut env, &packet_obj) {
+        if let Ok(global) = env.new_global_ref(&packet_obj) {
+            crate::packet_capture::push_out(type_name, global, false);
+        }
+        return 0;
+    }
+
+    let global_ref = match env.new_global_ref(&packet_obj) {
+        Ok(r) => r,
+        Err(_) => return 0,
+    };
+
+    // Run Lua on_packet_send callbacks (non-blocking: if Lua is busy, let packet through)
+    let cancelled = crate::lua_engine::try_on_packet_send(global_ref).unwrap_or(false);
+
+    if let Ok(cap_ref) = env.new_global_ref(&packet_obj) {
+        crate::packet_capture::push_out(type_name, cap_ref, cancelled);
+    }
+
+    cancelled as jni::sys::jboolean
 }

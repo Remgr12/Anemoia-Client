@@ -1,7 +1,26 @@
 use anyhow::Result;
 use jni::JNIEnv;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::minecraft::Minecraft;
+
+static CACHED_WIN: AtomicUsize = AtomicUsize::new(0);
+
+/// Returns cached window pointer without JNI. Null if not yet fetched.
+pub fn cached_window_ptr() -> *mut libc::c_void {
+    CACHED_WIN.load(Ordering::Relaxed) as *mut libc::c_void
+}
+
+/// Like `get_glfw_window` but caches result — JNI only on first call.
+pub fn get_glfw_window_cached(mc: &Minecraft, env: &mut JNIEnv) -> Result<*mut libc::c_void> {
+    let cached = CACHED_WIN.load(Ordering::Relaxed);
+    if cached != 0 {
+        return Ok(cached as *mut libc::c_void);
+    }
+    let win = get_glfw_window(mc, env)?;
+    CACHED_WIN.store(win as usize, Ordering::Relaxed);
+    Ok(win)
+}
 
 /// Returns the GLFW window pointer (`long`) from `Minecraft.getWindow().getWindow()`.
 ///

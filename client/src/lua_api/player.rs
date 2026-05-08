@@ -19,6 +19,10 @@ impl LuaUserData for LuaInventory {
         m.add_method("set_selected_slot", |_, this, (v,): (i32,)| {
             with_env(|env| this.0.set_selected_slot(env, v))
         });
+        m.add_method("item_at", |lua, this, (slot,): (i32,)| {
+            let item = with_env(|env| this.0.get_item_at(env, slot))?;
+            Ok(lua.create_userdata(super::item::LuaItemStack(Arc::new(item)))?)
+        });
     }
 }
 
@@ -114,8 +118,21 @@ impl LuaUserData for LuaPlayer {
                     Some(f) => f,
                     None => return Ok(false),
                 };
-                let cls = Jvm::find_class(env, "net/minecraft/world/effect/MobEffects")?;
-                let effect = env.get_static_field(cls, field, "Lnet/minecraft/world/effect/MobEffect;")?.l()?;
+                let cls = match Jvm::find_class(env, "net/minecraft/world/effect/MobEffects") {
+                    Ok(c) => c,
+                    Err(_) => { let _ = env.exception_clear(); return Ok(false); }
+                };
+                // Try Holder (MC 1.20.2+/26.x) then legacy MobEffect
+                let effect = match env.get_static_field(&cls, field, "Lnet/minecraft/core/Holder;").and_then(|v| v.l()) {
+                    Ok(obj) if !obj.is_null() => obj,
+                    _ => {
+                        let _ = env.exception_clear();
+                        match env.get_static_field(&cls, field, "Lnet/minecraft/world/effect/MobEffect;").and_then(|v| v.l()) {
+                            Ok(obj) if !obj.is_null() => obj,
+                            _ => { let _ = env.exception_clear(); return Ok(false); }
+                        }
+                    }
+                };
                 this.0.has_effect(env, effect)
             })
         });
@@ -162,8 +179,20 @@ impl LuaUserData for LuaPlayer {
                     Some(f) => f,
                     None => return Ok(()),
                 };
-                let cls = Jvm::find_class(env, "net/minecraft/world/effect/MobEffects")?;
-                let effect = env.get_static_field(cls, field, "Lnet/minecraft/world/effect/MobEffect;")?.l()?;
+                let cls = match Jvm::find_class(env, "net/minecraft/world/effect/MobEffects") {
+                    Ok(c) => c,
+                    Err(_) => { let _ = env.exception_clear(); return Ok(()); }
+                };
+                let effect = match env.get_static_field(&cls, field, "Lnet/minecraft/core/Holder;").and_then(|v| v.l()) {
+                    Ok(obj) if !obj.is_null() => obj,
+                    _ => {
+                        let _ = env.exception_clear();
+                        match env.get_static_field(&cls, field, "Lnet/minecraft/world/effect/MobEffect;").and_then(|v| v.l()) {
+                            Ok(obj) if !obj.is_null() => obj,
+                            _ => { let _ = env.exception_clear(); return Ok(()); }
+                        }
+                    }
+                };
                 this.0.remove_effect(env, effect)
             })
         });
@@ -181,8 +210,16 @@ impl LuaUserData for LuaPlayer {
         });
 
         m.add_method("input", |lua, this, ()| {
-            let input = with_env(|env| this.0.get_input(env))?;
             let t = lua.create_table()?;
+            let input = match with_env(|env| this.0.get_input(env)) {
+                Ok(i) => i,
+                Err(_) => {
+                    t.set("left", false)?; t.set("right", false)?;
+                    t.set("up", false)?;   t.set("down", false)?;
+                    t.set("jumping", false)?; t.set("sneaking", false)?;
+                    return Ok(t);
+                }
+            };
             t.set("left", input.left)?;
             t.set("right", input.right)?;
             t.set("up", input.up)?;
@@ -199,6 +236,14 @@ impl LuaUserData for LuaPlayer {
 
         m.add_method("display_message", |_, this, (message,): (String,)| {
             with_env(|env| this.0.display_message(env, &message))
+        });
+
+        m.add_method("set_pos", |_, this, (x, y, z): (f64, f64, f64)| {
+            with_env(|env| this.0.set_pos(env, x, y, z))
+        });
+
+        m.add_method("set_no_physics", |_, this, (v,): (bool,)| {
+            with_env(|env| this.0.set_no_physics(env, v))
         });
     }
 }
@@ -281,7 +326,10 @@ where
     let mut env = Jvm::get()
         .attach()
         .map_err(|e| LuaError::runtime(e.to_string()))?;
-    f(&mut env).map_err(|e| LuaError::runtime(e.to_string()))
+    f(&mut env).map_err(|e| {
+        let _ = env.exception_clear();
+        LuaError::runtime(e.to_string())
+    })
 }
 
 fn jni_f64(

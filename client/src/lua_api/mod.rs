@@ -90,9 +90,9 @@ pub fn register(lua: &Lua) -> Result<()> {
 
     mc.set(
         "send_packet",
-        lua.create_function(|_, (packet_ud, raw): (LuaAnyUserData, Option<bool>)| {
+        lua.create_function(|_, (packet_ud, _raw): (LuaAnyUserData, Option<bool>)| {
             let packet_ref = packet_ud.borrow::<crate::mc::packet::Packet>()?;
-            
+
             let jvm = crate::jvm::Jvm::get();
             let mut env = jvm.attach().map_err(|e| LuaError::runtime(e.to_string()))?;
 
@@ -107,31 +107,36 @@ pub fn register(lua: &Lua) -> Result<()> {
             let connection = player.get_connection(&mut env)
                 .map_err(|e| LuaError::runtime(e.to_string()))?;
 
-            connection.send(&mut env, &packet_ref, !raw.unwrap_or(false)).map_err(|e| LuaError::runtime(e.to_string()))
+            // Always bypass on_packet_send hook — on_tick holds the LUA mutex and
+            // re-acquiring it here deadlocks the game. The raw param is kept for
+            // script compatibility but has no effect.
+            connection.send(&mut env, &packet_ref, false).map_err(|e| LuaError::runtime(e.to_string()))
         })?,
     )?;
 
     mc.set(
         "is_key_down",
         lua.create_function(|_, key: i32| {
-            let glfw_handle = match unsafe { crate::glfw::Glfw::load() } {
-                Ok(h) => h,
-                Err(e) => return Err(LuaError::runtime(e.to_string())),
+            // Both cached after first call — no dlsym or JNI on subsequent calls
+            let glfw = crate::glfw::Glfw::get()
+                .map_err(|e| LuaError::runtime(e.to_string()))?;
+
+            let win = {
+                let ptr = crate::mc::window::cached_window_ptr();
+                if !ptr.is_null() {
+                    ptr
+                } else {
+                    let jvm = crate::jvm::Jvm::get();
+                    let mut env = jvm.attach().map_err(|e| LuaError::runtime(e.to_string()))?;
+                    let mc_obj = crate::mc::minecraft::Minecraft::get_instance(&mut env)
+                        .map_err(|e| LuaError::runtime(e.to_string()))?
+                        .ok_or_else(|| LuaError::runtime("Minecraft not ready"))?;
+                    crate::mc::window::get_glfw_window_cached(&mc_obj, &mut env)
+                        .map_err(|e| LuaError::runtime(e.to_string()))?
+                }
             };
 
-            let jvm = crate::jvm::Jvm::get();
-            let mut env = jvm
-                .attach()
-                .map_err(|e| LuaError::runtime(e.to_string()))?;
-
-            let mc_obj = crate::mc::minecraft::Minecraft::get_instance(&mut env)
-                .map_err(|e| LuaError::runtime(e.to_string()))?
-                .ok_or_else(|| LuaError::runtime("Minecraft not ready"))?;
-
-            let window = crate::mc::window::get_glfw_window(&mc_obj, &mut env)
-                .map_err(|e| LuaError::runtime(e.to_string()))?;
-
-            Ok(glfw_handle.key_pressed(window, key))
+            Ok(glfw.key_pressed(win, key))
         })?,
     )?;
 
@@ -252,5 +257,8 @@ where
     let mut env = crate::jvm::Jvm::get()
         .attach()
         .map_err(|e| LuaError::runtime(e.to_string()))?;
-    f(&mut env).map_err(|e| LuaError::runtime(e.to_string()))
+    f(&mut env).map_err(|e| {
+        let _ = env.exception_clear();
+        LuaError::runtime(e.to_string())
+    })
 }

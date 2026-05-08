@@ -1,6 +1,25 @@
 use anyhow::Result;
 use jni::{objects::GlobalRef, JNIEnv};
 use mlua::prelude::*;
+use std::sync::atomic::{AtomicI32, Ordering};
+
+// Tracks how many packets are "in flight" from Lua sends.
+// Incremented in Connection::send(), decremented in on_outgoing_native.
+// Prevents double-hooking packets sent by mc.send_packet().
+static LUA_SEND_INFLIGHT: AtomicI32 = AtomicI32::new(0);
+
+pub fn mark_lua_send() {
+    LUA_SEND_INFLIGHT.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn is_lua_send(_env: &mut jni::JNIEnv, _obj: &jni::objects::JObject) -> bool {
+    let n = LUA_SEND_INFLIGHT.load(Ordering::Relaxed);
+    if n > 0 {
+        LUA_SEND_INFLIGHT.fetch_sub(1, Ordering::Relaxed);
+        return true;
+    }
+    false
+}
 
 pub struct Packet {
     pub jni_ref: GlobalRef,
@@ -64,6 +83,8 @@ impl Connection {
             return Ok(());
         }
 
+        // Mark as Lua-originated so on_outgoing_native skips the hook for this packet
+        mark_lua_send();
         env.call_method(
             self.jni_ref.as_obj(),
             "send",

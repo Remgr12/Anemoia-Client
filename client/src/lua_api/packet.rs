@@ -23,6 +23,24 @@ pub fn register(lua: &Lua, anemoia: &LuaTable) -> anyhow::Result<()> {
         })
     })?)?;
 
+    // ServerboundMovePlayerPacket$PosRot — carries position AND rotation.
+    // Used by Silent scaffold to spoof the server-side look direction without
+    // touching the client's actual camera pitch/yaw.
+    anemoia.set("create_posrot_packet", lua.create_function(|lua, (x, y, z, yaw, pitch, on_ground): (f64, f64, f64, f32, f32, bool)| {
+        with_env(|env| {
+            let cls = Jvm::find_class(env, "net/minecraft/network/protocol/game/ServerboundMovePlayerPacket$PosRot")?;
+            let obj = env.new_object(cls, "(DDDFFZ)V", &[
+                jni::objects::JValue::Double(x),
+                jni::objects::JValue::Double(y),
+                jni::objects::JValue::Double(z),
+                jni::objects::JValue::Float(yaw),
+                jni::objects::JValue::Float(pitch),
+                jni::objects::JValue::Bool(on_ground as jni::sys::jboolean),
+            ])?;
+            Ok(lua.create_userdata(Packet { jni_ref: env.new_global_ref(obj)? })?)
+        })
+    })?)?;
+
     Ok(())
 }
 

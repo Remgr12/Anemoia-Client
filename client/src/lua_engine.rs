@@ -229,22 +229,55 @@ pub fn on_packet_send(packet: crate::mc::packet::Packet) -> Result<bool> {
         return Ok(false);
     }
 
-    let result: LuaResult<bool> = guard.scope(|scope| {
-        let ud = scope.create_any_userdata(packet, |_| {})?;
-        let mut cancelled = false;
-        for key in callbacks.iter() {
-            let func: LuaFunction = guard.registry_value(key)?;
-            // If any callback returns true, packet is cancelled
-            if let Ok(res) = func.call::<bool>(ud.clone()) {
-                if res {
-                    cancelled = true;
-                }
+    // Use persistent (non-scoped) typed userdata so scripts can store the packet
+    // (e.g. FakeLag) and call packet:type_name() / packet:fields() on it.
+    let ud = guard.create_userdata(packet)
+        .map_err(|e| anyhow::anyhow!("Lua packet error: {}", e))?;
+    let mut cancelled = false;
+    for key in callbacks.iter() {
+        let func: LuaFunction = match guard.registry_value(key) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        if let Ok(res) = func.call::<bool>(ud.clone()) {
+            if res {
+                cancelled = true;
             }
         }
-        Ok(cancelled)
-    });
+    }
 
-    result.map_err(|e| anyhow::anyhow!("Lua packet error: {}", e))
+    Ok(cancelled)
+}
+
+/// Non-blocking version — uses try_lock to avoid blocking the Netty I/O thread.
+/// Returns None if the Lua state is currently busy (on_tick running).
+pub fn try_on_packet_send(global_ref: jni::objects::GlobalRef) -> Option<bool> {
+    let mutex = LUA.get()?;
+    let guard = mutex.try_lock()?;
+
+    let callbacks = get_packet_send_callbacks();
+    let cbs = callbacks.lock();
+    if cbs.is_empty() {
+        return Some(false);
+    }
+
+    let packet = crate::mc::packet::Packet::new(global_ref);
+    let ud = match guard.create_userdata(packet) {
+        Ok(u) => u,
+        Err(_) => return Some(false),
+    };
+
+    let mut cancelled = false;
+    for key in cbs.iter() {
+        let func: LuaFunction = match guard.registry_value(key) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        if let Ok(res) = func.call::<bool>(ud.clone()) {
+            if res { cancelled = true; }
+        }
+    }
+    Some(cancelled)
 }
 
 pub fn on_render(painter: egui::Painter) -> Result<()> {
@@ -354,12 +387,33 @@ fn collect_modules(lua: &Lua) -> LuaResult<Vec<ModuleInfo>> {
                             }
                         }
                         LuaValue::Integer(i) => {
-                             settings.push(ModuleSetting::Keybind { name, value: i as i32 });
+                            let mut min = 0.0_f64;
+                            let mut max = 100.0_f64;
+                            let mut is_keybind = false;
+                            if let Ok(meta) = m.get::<LuaTable>("_settings_meta") {
+                                if let Ok(m_table) = meta.get::<LuaTable>(name.clone()) {
+                                    if let Ok(t) = m_table.get::<String>("type") {
+                                        if t == "keybind" { is_keybind = true; }
+                                    }
+                                    min = m_table.get("min").unwrap_or(0.0);
+                                    max = m_table.get("max").unwrap_or(100.0);
+                                }
+                            }
+                            if is_keybind {
+                                settings.push(ModuleSetting::Keybind { name, value: i as i32 });
+                            } else {
+                                settings.push(ModuleSetting::Number { name, value: i as f64, min, max });
+                            }
                         }
                         _ => {}
                     }
                 }
             }
+        }
+
+        // skip utility modules that have their own dedicated tab
+        if m.get::<bool>("hidden").unwrap_or(false) {
+            continue;
         }
 
         out.push(ModuleInfo {

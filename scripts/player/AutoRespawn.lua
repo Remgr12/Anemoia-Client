@@ -9,8 +9,9 @@ function module:on_tick()
     local player = mc.player()
     if not player then return end
 
-    if player:is_dead() then
-        player:respawn()
+    local ok, dead = pcall(function() return player:is_dead() end)
+    if ok and dead then
+        pcall(function() player:respawn() end)
     end
 end
 

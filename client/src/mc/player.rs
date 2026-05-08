@@ -148,6 +148,30 @@ impl LocalPlayer {
         Ok(())
     }
 
+    pub fn set_pos(&self, env: &mut JNIEnv, x: f64, y: f64, z: f64) -> Result<()> {
+        env.call_method(
+            self.jni_ref.as_obj(),
+            "setPos",
+            "(DDD)V",
+            &[
+                jni::objects::JValue::Double(x),
+                jni::objects::JValue::Double(y),
+                jni::objects::JValue::Double(z),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_no_physics(&self, env: &mut JNIEnv, v: bool) -> Result<()> {
+        env.set_field(
+            self.jni_ref.as_obj(),
+            "noPhysics",
+            "Z",
+            jni::objects::JValue::Bool(v as jni::sys::jboolean),
+        )?;
+        Ok(())
+    }
+
     pub fn get_fall_distance(&self, env: &mut JNIEnv) -> Result<f32> {
         Ok(env.get_field(self.jni_ref.as_obj(), "fallDistance", "F")?.f()?)
     }
@@ -157,24 +181,28 @@ impl LocalPlayer {
     }
 
     pub fn get_input(&self, env: &mut JNIEnv) -> Result<PlayerInput> {
-        let input_obj = env
-            .get_field(self.jni_ref.as_obj(), "input", "Lnet/minecraft/client/player/Input;")?
-            .l()?;
-        
-        let left = env.get_field(&input_obj, "left", "Z")?.z()?;
-        let right = env.get_field(&input_obj, "right", "Z")?.z()?;
-        let up = env.get_field(&input_obj, "up", "Z")?.z()?;
-        let down = env.get_field(&input_obj, "down", "Z")?.z()?;
-        let jumping = env.get_field(&input_obj, "jumping", "Z")?.z()?;
-        let shift_key_down = env.get_field(&input_obj, "shiftKeyDown", "Z")?.z()?;
+        let input_obj = match env
+            .get_field(self.jni_ref.as_obj(), "input", "Lnet/minecraft/client/player/Input;")
+            .and_then(|v| v.l())
+        {
+            Ok(obj) if !obj.is_null() => obj,
+            _ => { let _ = env.exception_clear(); return Ok(PlayerInput::default()); }
+        };
+
+        fn read_bool(env: &mut JNIEnv, obj: &jni::objects::JObject, field: &str) -> bool {
+            match env.get_field(obj, field, "Z").and_then(|v| v.z()) {
+                Ok(v) => v,
+                Err(_) => { let _ = env.exception_clear(); false }
+            }
+        }
 
         Ok(PlayerInput {
-            left,
-            right,
-            up,
-            down,
-            jumping,
-            shift_key_down,
+            left:           read_bool(env, &input_obj, "left"),
+            right:          read_bool(env, &input_obj, "right"),
+            up:             read_bool(env, &input_obj, "up"),
+            down:           read_bool(env, &input_obj, "down"),
+            jumping:        read_bool(env, &input_obj, "jumping"),
+            shift_key_down: read_bool(env, &input_obj, "shiftKeyDown"),
         })
     }
 
@@ -234,12 +262,25 @@ impl LocalPlayer {
     }
 
     pub fn has_effect(&self, env: &mut JNIEnv, effect_obj: jni::objects::JObject) -> Result<bool> {
-        Ok(env.call_method(
+        // Try Holder-based signature (MC 1.20.2+/26.x), fall back to legacy MobEffect
+        match env.call_method(
+            self.jni_ref.as_obj(),
+            "hasEffect",
+            "(Lnet/minecraft/core/Holder;)Z",
+            &[jni::objects::JValue::Object(&effect_obj)],
+        ).and_then(|v| v.z()) {
+            Ok(v) => return Ok(v),
+            Err(_) => { let _ = env.exception_clear(); }
+        }
+        match env.call_method(
             self.jni_ref.as_obj(),
             "hasEffect",
             "(Lnet/minecraft/world/effect/MobEffect;)Z",
             &[jni::objects::JValue::Object(&effect_obj)],
-        )?.z()?)
+        ).and_then(|v| v.z()) {
+            Ok(v) => Ok(v),
+            Err(_) => { let _ = env.exception_clear(); Ok(false) }
+        }
     }
 
     pub fn jump(&self, env: &mut JNIEnv) -> Result<()> {
@@ -326,13 +367,24 @@ impl LocalPlayer {
     }
 
     pub fn remove_effect(&self, env: &mut JNIEnv, effect_obj: jni::objects::JObject) -> Result<()> {
-        env.call_method(
+        match env.call_method(
+            self.jni_ref.as_obj(),
+            "removeEffect",
+            "(Lnet/minecraft/core/Holder;)Z",
+            &[jni::objects::JValue::Object(&effect_obj)],
+        ) {
+            Ok(_) => return Ok(()),
+            Err(_) => { let _ = env.exception_clear(); }
+        }
+        match env.call_method(
             self.jni_ref.as_obj(),
             "removeEffect",
             "(Lnet/minecraft/world/effect/MobEffect;)Z",
             &[jni::objects::JValue::Object(&effect_obj)],
-        )?;
-        Ok(())
+        ) {
+            Ok(_) => Ok(()),
+            Err(_) => { let _ = env.exception_clear(); Ok(()) }
+        }
     }
 
     pub fn get_container_id(&self, env: &mut JNIEnv) -> Result<i32> {
@@ -381,8 +433,19 @@ impl PlayerInventory {
         )?;
         Ok(())
     }
+
+    pub fn get_item_at(&self, env: &mut JNIEnv, slot: i32) -> Result<ItemStack> {
+        let obj = env.call_method(
+            self.jni_ref.as_obj(),
+            "getItem",
+            "(I)Lnet/minecraft/world/item/ItemStack;",
+            &[jni::objects::JValue::Int(slot)],
+        )?.l()?;
+        Ok(ItemStack { jni_ref: env.new_global_ref(obj)? })
+    }
 }
 
+#[derive(Default)]
 pub struct PlayerInput {
     pub left: bool,
     pub right: bool,

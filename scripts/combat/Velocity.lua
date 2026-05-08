@@ -20,30 +20,37 @@ function module:on_tick()
     local player = mc.player()
     if not player then return end
 
-    local hurt_time = player:hurt_time()
+    local ok_ht, hurt_time = pcall(function() return player:hurt_time() end)
+    if not ok_ht then return end
+
     local mode = self.settings.mode
 
     if mode == "Simple" then
         if hurt_time > 0 and not self.was_hurt then
-            local vx, vy, vz = table.unpack(player:velocity())
-            player:set_velocity(
-                vx * (self.settings.horizontal / 100),
-                vy * (self.settings.vertical / 100),
-                vz * (self.settings.horizontal / 100)
-            )
+            local ok_vel, vel = pcall(function() return player:velocity() end)
+            if ok_vel then
+                local vx, vy, vz = table.unpack(vel)
+                pcall(function()
+                    player:set_velocity(
+                        vx * (self.settings.horizontal / 100),
+                        vy * (self.settings.vertical / 100),
+                        vz * (self.settings.horizontal / 100)
+                    )
+                end)
+            end
             self.was_hurt = true
         elseif hurt_time == 0 then
             self.was_hurt = false
         end
     elseif mode == "JumpReset" then
         if hurt_time > 0 and not self.was_hurt then
-            if player:on_ground() then
-                -- Jump reset logic: jumping when hit reduces knockback
-                local input = player:input()
-                -- We can't easily force a jump via input yet, 
-                -- but we can set Y velocity
-                local vx, vy, vz = table.unpack(player:velocity())
-                player:set_velocity(vx, 0.42, vz)
+            local ok_g, on_ground = pcall(function() return player:on_ground() end)
+            if ok_g and on_ground then
+                local ok_vel, vel = pcall(function() return player:velocity() end)
+                if ok_vel then
+                    local vx, _, vz = table.unpack(vel)
+                    pcall(function() player:set_velocity(vx, 0.42, vz) end)
+                end
             end
             self.was_hurt = true
         elseif hurt_time == 0 then

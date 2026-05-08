@@ -15,28 +15,20 @@ function module:on_tick()
     local player = mc.player()
     if not player then return end
 
-    if player:is_using_item() then
-        local vx, vy, vz = table.unpack(player:velocity())
-        
-        -- In Vanilla, you are slowed down to ~20% speed (0.2 multiplier)
-        -- To keep 100% speed, we'd need to multiply by 5.0, but usually
-        -- it's better to just set the velocity if moving.
-        
-        -- Simple approach: if moving, boost velocity back up
-        local input = player:input()
-        if input.up or input.down or input.left or input.right then
-            -- This is a very basic NoSlow. 
-            -- Real NoSlow usually involves packets or hooking movement input.
-            -- Since we only have on_tick, we can try to compensate.
-            
-            -- Note: 0.2 is the vanilla slowdown. 
-            -- To get to 'multiplier', we multiply by (multiplier / 0.2)
-            local boost = self.settings.multiplier / 0.2
-            
-            -- Only apply boost if we haven't already boosted this tick
-            -- (Basic protection against double-boosting if on_tick is called multiple times)
-            player:set_velocity(vx * boost, vy, vz * boost)
-        end
+    local ok_use, using = pcall(function() return player:is_using_item() end)
+    if not ok_use or not using then return end
+
+    local ok_vel, vel = pcall(function() return player:velocity() end)
+    if not ok_vel then return end
+    local vx, vy, vz = table.unpack(vel)
+
+    local is_moving = mc.is_key_down(87) or mc.is_key_down(65) or
+                      mc.is_key_down(83) or mc.is_key_down(68)
+    if is_moving then
+        -- MC applies 0.2x slowdown to velocity when using item.
+        -- Multiply back to restore intended speed.
+        local boost = self.settings.multiplier / 0.2
+        pcall(function() player:set_velocity(vx * boost, vy, vz * boost) end)
     end
 end
 

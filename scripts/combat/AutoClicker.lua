@@ -31,14 +31,12 @@ function module:on_tick()
     -- Anemoia is_key_down uses GLFW codes. 
     -- Mouse buttons are typically 0..7
     
-    -- Handle Attack
     if (mode == "Left" or mode == "Both") and mc.is_key_down(0) then
-        self:handle_attack(player)
+        pcall(function() self:handle_attack(player) end)
     end
 
-    -- Handle Use
     if (mode == "Right" or mode == "Both") and mc.is_key_down(1) then
-        self:handle_use(player)
+        pcall(function() self:handle_use(player) end)
     end
 end
 
