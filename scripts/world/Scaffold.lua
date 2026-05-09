@@ -132,7 +132,7 @@ end
 
 function module:on_tick()
     -- Rate limit: run at ~20fps max regardless of render FPS
-    local t = os.clock()
+    local t = mc.clock()
     local mode = self.settings.mode
     local min_interval = mode == "GodBridge" and 0.033 or 0.05
     if t - self._last_t < min_interval then return end
@@ -158,7 +158,9 @@ function module:on_tick()
     local is_on_ground = ok_g and on_ground
 
     local bx = math.floor(px)
-    local by = math.floor(py) - 1
+    -- ceil(py)-1: correct for both on-ground (py integer) and mid-air (py fractional)
+    -- floor(py)-1 is wrong when falling — it targets one block too low
+    local by = math.ceil(py) - 1
     local bz = math.floor(pz)
 
     if mode == "Normal" and self.settings.safewalk and is_on_ground then
@@ -173,7 +175,7 @@ function module:on_tick()
     -- Cache hotbar block slot; re-scan every 10 frames or when nil
     local block_slot
     if self.settings.hotbar then
-        if not self._slot_cache or self._frame - self._slot_cache_age > 10 then
+        if not self._slot_cache or self._frame - self._slot_cache_age > 4 then
             self._slot_cache = find_block_slot(inv)
             self._slot_cache_age = self._frame
         end

@@ -289,11 +289,22 @@ impl LocalPlayer {
     }
 
     pub fn get_step_height(&self, env: &mut JNIEnv) -> Result<f32> {
-        Ok(env.get_field(self.jni_ref.as_obj(), "maxUpStep", "F")?.f()?)
+        // Field in pre-1.20.5; became a method in MC 26.x
+        match env.get_field(self.jni_ref.as_obj(), "maxUpStep", "F") {
+            Ok(v) => return Ok(v.f()?),
+            Err(_) => { let _ = env.exception_clear(); }
+        }
+        Ok(env.call_method(self.jni_ref.as_obj(), "maxUpStep", "()F", &[])?.f()?)
     }
 
     pub fn set_step_height(&self, env: &mut JNIEnv, height: f32) -> Result<()> {
-        env.set_field(self.jni_ref.as_obj(), "maxUpStep", "F", jni::objects::JValue::Float(height))?;
+        // Field write in pre-1.20.5
+        if env.set_field(self.jni_ref.as_obj(), "maxUpStep", "F", jni::objects::JValue::Float(height)).is_ok() {
+            return Ok(());
+        }
+        let _ = env.exception_clear();
+        // In MC 26.x maxUpStep is computed from entity type data — no public setter exists.
+        // Step module will silently be a no-op on unsupported versions.
         Ok(())
     }
 
@@ -356,14 +367,35 @@ impl LocalPlayer {
             "connection",
             "Lnet/minecraft/client/multiplayer/ClientPacketListener;",
         )?.l()?;
+
+        // MC 1.19+ split chat into sendChat and sendCommand.
+        // Try the matching method first, then fall back to sendChat for all.
+        if let Some(cmd) = message.strip_prefix('/') {
+            let cmd_jstr = env.new_string(cmd)?;
+            match env.call_method(
+                &listener_obj,
+                "sendCommand",
+                "(Ljava/lang/String;)V",
+                &[jni::objects::JValue::Object(&cmd_jstr.into())],
+            ) {
+                Ok(_) => return Ok(()),
+                Err(_) => { let _ = env.exception_clear(); }
+            }
+        }
+
         let msg_jstr = env.new_string(message)?;
-        env.call_method(
+        match env.call_method(
             &listener_obj,
             "sendChat",
             "(Ljava/lang/String;)V",
             &[jni::objects::JValue::Object(&msg_jstr.into())],
-        )?;
-        Ok(())
+        ) {
+            Ok(_) => Ok(()),
+            Err(_) => {
+                let _ = env.exception_clear();
+                anyhow::bail!("sendChat: no compatible method found on ClientPacketListener")
+            }
+        }
     }
 
     pub fn remove_effect(&self, env: &mut JNIEnv, effect_obj: jni::objects::JObject) -> Result<()> {

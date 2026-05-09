@@ -43,6 +43,11 @@ impl LuaUserData for LuaPainter {
             );
             Ok(())
         });
+
+        m.add_method("screen_size", |_, this, ()| {
+            let r = this.painter.clip_rect();
+            Ok((r.width(), r.height()))
+        });
     }
 }
 

@@ -15,12 +15,17 @@ function module:on_tick()
     local player = mc.player()
     if not player then return end
 
-    if player:is_using_item() then
-        local x, y, z = player:x(), player:y(), player:z()
-        for i = 1, self.settings.packets do
-            local packet = anemoia.create_position_packet(x, y, z, player:on_ground())
-            mc.send_packet(packet)
-        end
+    local ok_use, using = pcall(function() return player:is_using_item() end)
+    if not ok_use or not using then return end
+
+    local ok_pos, x, y, z, on_g = pcall(function()
+        return player:x(), player:y(), player:z(), player:on_ground()
+    end)
+    if not ok_pos then return end
+
+    for i = 1, self.settings.packets do
+        local ok_pkt, packet = pcall(anemoia.create_position_packet, x, y, z, on_g)
+        if ok_pkt and packet then pcall(mc.send_packet, packet) end
     end
 end
 

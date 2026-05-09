@@ -17,11 +17,12 @@ function module:on_tick()
     if not player then return end
 
     local now = os.clock()
-    if now - self.last_move > self.settings.delay then
-        local yaw = player:yaw()
-        player:set_yaw(yaw + 1)
-        self.last_move = now
-    end
+    if now - self.last_move < self.settings.delay then return end
+
+    local ok, yaw = pcall(function() return player:yaw() end)
+    if not ok then return end
+    pcall(function() player:set_yaw(yaw + 1) end)
+    self.last_move = now
 end
 
 anemoia.register(module)

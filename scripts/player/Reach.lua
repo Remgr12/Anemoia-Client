@@ -23,14 +23,18 @@ function module:on_tick()
     local now = os.clock() * 1000
     if now - self._last_attack < (1000.0 / self.settings.cps) then return end
 
-    local px, py, pz = player:x(), player:y() + 1.62, player:z()
+    local ok_pos, px, py, pz = pcall(function()
+        return player:x(), player:y() + 1.62, player:z()
+    end)
+    if not ok_pos then return end
+
     local range_sq = self.settings.distance * self.settings.distance
 
     for _, entity in ipairs(mc.entities()) do
         if entity:alive() and not entity:is_local_player() then
             if entity:dist_sq(px, py - 1.62, pz) < range_sq then
-                mc.attack(entity)
-                self._last_attack = now
+                local ok = pcall(function() mc.attack(entity) end)
+                if ok then self._last_attack = now end
                 break
             end
         end

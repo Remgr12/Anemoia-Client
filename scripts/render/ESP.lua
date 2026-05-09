@@ -1,10 +1,18 @@
--- Cache populated on client thread (on_tick); render thread reads cache only.
 local module = {
     name        = "ESP",
-    description = "Draws entity names on screen",
+    description = "Draws entity info and health on screen",
     category    = "Render",
     enabled     = false,
-    _cache      = {},
+    settings = {
+        show_health  = true,
+        show_dist    = true,
+        players_only = false,
+        max_dist     = 64.0,
+    },
+    _settings_meta = {
+        max_dist = { min = 10.0, max = 128.0 },
+    },
+    _cache = {},
 }
 
 function module:on_tick()
@@ -19,31 +27,47 @@ function module:on_tick()
     end)
     if not ok_pos then return end
 
-    local entities = mc.entities()
-    for _, entity in ipairs(entities) do
+    local max_dsq = self.settings.max_dist * self.settings.max_dist
+
+    for _, entity in ipairs(mc.entities()) do
         local ok, is_local, alive = pcall(function()
             return entity:is_local_player(), entity:alive()
         end)
         if not ok or is_local or not alive then goto continue end
 
-        local ok_info, name, dsq, type_id = pcall(function()
-            return entity:name(), entity:dist_sq(px, py, pz), entity:type_id()
+        local ok_info, name, dsq, type_id, hp = pcall(function()
+            return entity:name(), entity:dist_sq(px, py, pz), entity:type_id(), entity:health()
         end)
-        if not ok_info then goto continue end
+        if not ok_info or dsq > max_dsq then goto continue end
 
-        local dist  = math.sqrt(dsq)
-        local r, g, b = 200, 255, 200
-        if type_id:find("player") then
-            r, g, b = 255, 100, 100
+        local is_player = type_id:find("player") ~= nil
+        if self.settings.players_only and not is_player then goto continue end
+
+        local dist = math.sqrt(dsq)
+
+        -- Health-based colour for players: green (full) → yellow → red (low)
+        local r, g, b = 150, 255, 150
+        if is_player then
+            local frac = math.max(0, math.min(1, hp / 20.0))
+            r = math.floor(255 * (1 - frac))
+            g = math.floor(255 * frac)
+            b = 50
         end
 
-        self._cache[#self._cache + 1] = {
-            label = string.format("%s [%.1fm]", name, dist),
-            r = r, g = g, b = b,
-        }
+        local label = name or type_id
+        if self.settings.show_health then
+            label = string.format("%s %.1f hp", label, hp)
+        end
+        if self.settings.show_dist then
+            label = string.format("%s [%.1fm]", label, dist)
+        end
 
+        self._cache[#self._cache + 1] = { label = label, health = hp, r = r, g = g, b = b }
         ::continue::
     end
+
+    -- Most damaged targets first (highest priority)
+    table.sort(self._cache, function(a, b) return a.health < b.health end)
 end
 
 anemoia.on_render(function(painter)
@@ -53,7 +77,7 @@ anemoia.on_render(function(painter)
 
     local y = 50
     painter:text(10, y, "Entities:", 255, 255, 255, 255, 18)
-    y = y + 20
+    y = y + 22
 
     for _, entry in ipairs(cache) do
         painter:text(10, y, entry.label, entry.r, entry.g, entry.b, 255, 15)

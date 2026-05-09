@@ -368,7 +368,7 @@ fn fetch_messages_impl(
     ])
     .to_string();
     let req_url = format!(
-        "{}/api/v1/messages?anchor=newest&num_before=50&num_after=0&narrow={}",
+        "{}/api/v1/messages?anchor=newest&num_before=50&num_after=0&narrow={}&apply_markdown=false",
         url,
         urlencoding::encode(&narrow)
     );
@@ -518,7 +518,7 @@ fn poll_step(state: &Arc<Mutex<ZulipState>>) -> anyhow::Result<()> {
         let res = ureq::post(&format!("{}/api/v1/register", url))
             .set("Authorization", &format!("Basic {}", auth))
             .set("Content-Type", "application/x-www-form-urlencoded")
-            .send_string("event_types=[\"message\"]")?;
+            .send_string("event_types=[\"message\"]&apply_markdown=false")?;
         let json: serde_json::Value = res.into_json()?;
         if json["result"] == "success" {
             let mut lock = state.lock().unwrap();

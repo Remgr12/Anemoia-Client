@@ -1,97 +1,135 @@
 local module = {
     name = "SilentAura",
-    description = "Attacks entities without changing your client-side rotation",
+    description = "Attacks entities without changing visible client-side rotation",
     category = "Combat",
     enabled = false,
     settings = {
-        range = 4.0,
-        cps = 10,
+        range   = 4.0,
+        cps     = 10,
+        fov     = 360.0,
         targets = "Players",
     },
     _settings_meta = {
-        range = { min = 3.0, max = 6.0 },
-        cps = { min = 1, max = 20 },
-        targets = { type = "enum", options = { "Players", "Mobs", "All" } }
+        range   = { min = 3.0, max = 6.0 },
+        cps     = { min = 1, max = 20 },
+        fov     = { min = 30.0, max = 360.0 },
+        targets = { type = "enum", options = { "Players", "Mobs", "All" } },
     },
-    last_attack = 0
+    _last_attack = 0,
 }
+
+local function fov_angle(px, py, pz, yaw, pitch, tx, ty, tz)
+    local ry = math.rad(yaw)
+    local rp = math.rad(pitch)
+    local lx = -math.sin(ry) * math.cos(rp)
+    local ly = -math.sin(rp)
+    local lz =  math.cos(ry) * math.cos(rp)
+    local dx, dy, dz = tx - px, ty - py, tz - pz
+    local dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+    if dist < 0.0001 then return 0 end
+    local dot = (lx*dx + ly*dy + lz*dz) / dist
+    return math.deg(math.acos(math.max(-1, math.min(1, dot))))
+end
 
 function module:on_tick()
     local player = mc.player()
     if not player then return end
 
     local now = os.clock() * 1000
-    if now - self.last_attack < (1000 / self.settings.cps) then
-        return
-    end
+    if now - self._last_attack < (1000 / self.settings.cps) then return end
 
     local ok_pos, px, py, pz = pcall(function()
         return player:x(), player:y() + 1.62, player:z()
     end)
     if not ok_pos then return end
 
-    local entities = mc.entities()
-    
-    local best_target = nil
-    local best_dist = self.settings.range * self.settings.range
+    local ok_rot, cur_yaw, cur_pitch = pcall(function()
+        return player:yaw(), player:pitch()
+    end)
+    if not ok_rot then return end
 
-    for _, entity in ipairs(entities) do
-        if entity:alive() and not entity:is_local_player() then
-            local tid = entity:type_id()
-            local valid = false
-            
-            local filter = self.settings.targets
-            if filter == "All" then
-                valid = true
-            elseif filter == "Players" and tid:find("player") then
-                valid = true
-            elseif filter == "Mobs" and not tid:find("player") then
-                valid = true
-            end
+    local best, best_dsq = nil, self.settings.range * self.settings.range
+    local half_fov = self.settings.fov * 0.5
+    local filter   = self.settings.targets
+    local antibot  = _G["antibot_module"]
 
-            if valid then
-                local dsq = entity:dist_sq(px, py - 1.62, pz)
-                if dsq < best_dist then
-                    best_dist = dsq
-                    best_target = entity
-                end
+    for _, entity in ipairs(mc.entities()) do
+        local ok_b, alive, is_local = pcall(function()
+            return entity:alive(), entity:is_local_player()
+        end)
+        if not ok_b or not alive or is_local then goto continue end
+
+        local ok_tid, tid = pcall(function() return entity:type_id() end)
+        local valid = (filter == "All")
+            or (filter == "Players" and ok_tid and tid:find("player"))
+            or (filter == "Mobs"    and ok_tid and not tid:find("player"))
+        if not valid then goto continue end
+
+        if antibot and antibot.enabled and antibot:is_bot(entity) then goto continue end
+
+        local ok_d, dsq = pcall(function() return entity:dist_sq(px, py - 1.62, pz) end)
+        if not ok_d or dsq >= best_dsq then goto continue end
+
+        if half_fov < 180 then
+            local ok_ep, tx, ty, tz = pcall(function()
+                return entity:x(), entity:y() + 1.0, entity:z()
+            end)
+            if ok_ep then
+                local angle = fov_angle(px, py, pz, cur_yaw, cur_pitch, tx, ty, tz)
+                if angle > half_fov then goto continue end
             end
         end
+
+        best_dsq = dsq
+        best     = entity
+        ::continue::
     end
 
-    if best_target then
-        local ok_rot, old_yaw, old_pitch = pcall(function()
-            return player:yaw(), player:pitch()
-        end)
-        if not ok_rot then return end
+    if not best then return end
 
-        pcall(function()
-            self:rotate(player, px, py, pz, best_target)
-            mc.attack(best_target)
-        end)
+    -- HitSelect gate
+    local hs = _G["hitselect_module"]
+    if hs and hs.enabled and not hs:should_attack(player) then return end
 
-        -- Always restore — even if rotate or attack errored
-        pcall(function()
-            player:set_yaw(old_yaw)
-            player:set_pitch(old_pitch)
-        end)
+    -- Criticals gate (HitSelect mode)
+    local crits = _G["criticals_module"]
+    if crits and crits.enabled and not crits:can_attack(player) then return end
 
-        self.last_attack = now
+    -- Calculate exact rotation to target
+    local ok_bt, tx, ty, tz = pcall(function()
+        return best:x(), best:y() + 1.0, best:z()
+    end)
+    if not ok_bt then return end
+
+    local dx    = tx - px
+    local dy    = ty - py
+    local dz    = tz - pz
+    local hdist = math.sqrt(dx*dx + dz*dz)
+    local tyaw  = math.deg(math.atan2(dz, dx)) - 90
+    while tyaw < -180 do tyaw = tyaw + 360 end
+    while tyaw >  180 do tyaw = tyaw - 360 end
+    local tpitch = -math.deg(math.atan2(dy, hdist))
+
+    -- Silent: send posrot packet (server sees this yaw/pitch), don't touch client camera
+    local ok_pkt, spoof = pcall(anemoia.create_posrot_packet,
+        player:x(), player:y(), player:z(), tyaw, tpitch,
+        player:on_ground())
+    if ok_pkt and spoof then pcall(mc.send_packet, spoof) end
+
+    -- Criticals preparation (Packet/Jump modes)
+    if crits and crits.enabled and crits.settings.mode ~= "HitSelect" then
+        crits:prepare(player)
     end
-end
 
-function module:rotate(player, px, py, pz, target)
-    local tx, ty, tz = target:x(), target:y() + 1.0, target:z()
-    local dx = tx - px
-    local dy = ty - py
-    local dz = tz - pz
-    local dist = math.sqrt(dx*dx + dz*dz)
-    local yaw = math.deg(math.atan2(dz, dx)) - 90
-    local pitch = -math.deg(math.atan2(dy, dist))
-    while yaw < -180 do yaw = yaw + 360 end
-    while yaw > 180 do yaw = yaw - 360 end
-    player:set_yaw(yaw)
-    player:set_pitch(pitch)
+    pcall(function() mc.attack(best) end)
+
+    -- Restore original rotation on server via another posrot packet
+    local ok_rst, restore = pcall(anemoia.create_posrot_packet,
+        player:x(), player:y(), player:z(), cur_yaw, cur_pitch,
+        player:on_ground())
+    if ok_rst and restore then pcall(mc.send_packet, restore) end
+
+    self._last_attack = now
 end
 
 anemoia.register(module)

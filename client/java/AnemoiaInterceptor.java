@@ -33,4 +33,17 @@ public class AnemoiaInterceptor extends ChannelDuplexHandler {
             promise.setSuccess();
         }
     }
+
+    // Suppress lifecycle events fired when we inject into an already-active pipeline.
+    // Without these overrides, Netty fires channelRegistered/channelActive on the new
+    // handler immediately after addAfter(), which propagates to MC's packet handler
+    // and triggers a spurious disconnect.
+    @Override
+    public void channelRegistered(ChannelHandlerContext ctx) throws Exception {}
+
+    @Override
+    public void channelActive(ChannelHandlerContext ctx) throws Exception {}
+
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {}
 }

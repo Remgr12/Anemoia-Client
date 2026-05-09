@@ -1,5 +1,14 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+/// When set, the outgoing interceptor cancels all ServerboundMovePlayerPacket
+/// variants without acquiring the Lua lock — eliminating the race condition
+/// that lets camera-position packets slip through to the server during FreeCam.
+pub static FREEZE_PACKETS: AtomicBool = AtomicBool::new(false);
+
+pub fn set_freeze(active: bool) {
+    FREEZE_PACKETS.store(active, Ordering::Release);
+}
+
 use anyhow::Result;
 use jni::{objects::{JObject, JValue}, JNIEnv, NativeMethod};
 use log::{info, warn};
@@ -280,6 +289,16 @@ unsafe extern "C" fn on_outgoing_native(
             crate::packet_capture::push_out(type_name, global, false);
         }
         return 0;
+    }
+
+    // Hard-cancel movement packets when FreeCam freeze is active.
+    // This runs without acquiring the Lua lock, closing the race window where
+    // on_tick holds the lock and movement packets slip through unintercepted.
+    if FREEZE_PACKETS.load(Ordering::Acquire) && type_name.contains("ServerboundMovePlayerPacket") {
+        if let Ok(cap_ref) = env.new_global_ref(&packet_obj) {
+            crate::packet_capture::push_out(type_name, cap_ref, true);
+        }
+        return 1;
     }
 
     let global_ref = match env.new_global_ref(&packet_obj) {

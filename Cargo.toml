@@ -3,7 +3,7 @@ resolver = "2"
 members = ["injector", "agent_loader", "client", "launcher"]
 
 [workspace.package]
-version = "0.1.61"
+version = "0.1.65"
 edition = "2021"
 
 [profile.release]

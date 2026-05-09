@@ -6,11 +6,11 @@ local module = {
 }
 
 function module:on_tick()
-    mc.set_right_click_delay(0)
+    pcall(function() mc.set_right_click_delay(0) end)
 end
 
 function module:on_disable()
-    mc.set_right_click_delay(4)
+    pcall(function() mc.set_right_click_delay(4) end)
 end
 
 anemoia.register(module)

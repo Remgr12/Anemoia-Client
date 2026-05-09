@@ -42,6 +42,7 @@ pub type CharCallback = extern "C" fn(*mut libc::c_void, u32);
 
 pub struct Glfw {
     get_key: unsafe extern "C" fn(*mut libc::c_void, i32) -> i32,
+    get_mouse_button: unsafe extern "C" fn(*mut libc::c_void, i32) -> i32,
     get_cursor_pos: unsafe extern "C" fn(*mut libc::c_void, *mut f64, *mut f64),
     set_input_mode: unsafe extern "C" fn(*mut libc::c_void, i32, i32),
     get_framebuffer_size: unsafe extern "C" fn(*mut libc::c_void, *mut i32, *mut i32),
@@ -85,6 +86,7 @@ impl Glfw {
         }
         Ok(Arc::new(Glfw {
             get_key: sym!("glfwGetKey"),
+            get_mouse_button: sym!("glfwGetMouseButton"),
             get_cursor_pos: sym!("glfwGetCursorPos"),
             set_input_mode: sym!("glfwSetInputMode"),
             get_framebuffer_size: sym!("glfwGetFramebufferSize"),
@@ -121,6 +123,11 @@ impl Glfw {
 
     pub fn key_pressed(&self, win: *mut libc::c_void, key: i32) -> bool {
         unsafe { (self.get_key)(win, key) == GLFW_PRESS }
+    }
+
+    /// GLFW_MOUSE_BUTTON_1..GLFW_MOUSE_BUTTON_8 = 0..7
+    pub fn mouse_button_pressed(&self, win: *mut libc::c_void, button: i32) -> bool {
+        unsafe { (self.get_mouse_button)(win, button) == GLFW_PRESS }
     }
 
     pub fn cursor_pos(&self, win: *mut libc::c_void) -> (f64, f64) {

@@ -7,6 +7,10 @@ pub mod http;
 
 use anyhow::Result;
 use mlua::prelude::*;
+use std::sync::OnceLock;
+use std::time::Instant;
+
+static WALL_CLOCK_START: OnceLock<Instant> = OnceLock::new();
 
 /// Registers the full `mc` and `anemoia` globals into the Lua state.
 pub fn register(lua: &Lua) -> Result<()> {
@@ -136,7 +140,12 @@ pub fn register(lua: &Lua) -> Result<()> {
                 }
             };
 
-            Ok(glfw.key_pressed(win, key))
+            // GLFW mouse buttons occupy codes 0-7; keyboard starts at 32 (SPACE).
+            if key <= 7 {
+                Ok(glfw.mouse_button_pressed(win, key))
+            } else {
+                Ok(glfw.key_pressed(win, key))
+            }
         })?,
     )?;
 
@@ -181,6 +190,45 @@ pub fn register(lua: &Lua) -> Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("Minecraft not ready"))?;
                 mc_obj.set_gamma(env, value)
             })
+        })?,
+    )?;
+
+    mc.set(
+        "fov",
+        lua.create_function(|_, ()| {
+            with_env(|env| {
+                let mc_obj = crate::mc::minecraft::Minecraft::get_instance(env)?
+                    .ok_or_else(|| anyhow::anyhow!("Minecraft not ready"))?;
+                let options = env.get_field(mc_obj.jni_ref.as_obj(), "options",
+                    "Lnet/minecraft/client/Options;")?.l()?;
+                let fov_opt = env.get_field(&options, "fov",
+                    "Lnet/minecraft/client/OptionInstance;")?.l()?;
+                let boxed = env.call_method(&fov_opt, "get", "()Ljava/lang/Object;", &[])?.l()?;
+                Ok(env.call_method(&boxed, "doubleValue", "()D", &[])?.d()? as f32)
+            })
+        })?,
+    )?;
+
+    mc.set(
+        "clock",
+        lua.create_function(|_, ()| {
+            Ok(WALL_CLOCK_START.get_or_init(Instant::now).elapsed().as_secs_f64())
+        })?,
+    )?;
+
+    mc.set(
+        "freeze_pos",
+        lua.create_function(|_, ()| {
+            crate::mc::netty::set_freeze(true);
+            Ok(())
+        })?,
+    )?;
+
+    mc.set(
+        "unfreeze_pos",
+        lua.create_function(|_, ()| {
+            crate::mc::netty::set_freeze(false);
+            Ok(())
         })?,
     )?;
 

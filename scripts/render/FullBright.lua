@@ -6,11 +6,11 @@ local module = {
 }
 
 function module:on_tick()
-    mc.set_gamma(1000.0)
+    pcall(function() mc.set_gamma(1000.0) end)
 end
 
 function module:on_disable()
-    mc.set_gamma(1.0)
+    pcall(function() mc.set_gamma(1.0) end)
 end
 
 anemoia.register(module)

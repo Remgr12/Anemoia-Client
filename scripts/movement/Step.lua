@@ -14,14 +14,13 @@ local module = {
 function module:on_tick()
     local player = mc.player()
     if not player then return end
-
-    player:set_step_height(self.settings.height)
+    pcall(function() player:set_step_height(self.settings.height) end)
 end
 
 function module:on_disable()
     local player = mc.player()
     if player then
-        player:set_step_height(0.6)
+        pcall(function() player:set_step_height(0.6) end)
     end
 end
 

@@ -48,18 +48,19 @@ function module:handle_attack(player)
 
     local hr = mc.hit_result()
     local should_click = false
-    
+
     if not hr then
         should_click = (self.settings.objective == "Any")
     else
-        local type = hr:type()
+        local ok_type, type = pcall(function() return hr:type() end)
+        if not ok_type then return end
         local obj = self.settings.objective
 
         if obj == "Any" then
             should_click = true
         elseif obj == "Enemy" and type == "ENTITY" then
-            local target = hr:entity()
-            if target and target:alive() and not target:is_local_player() then
+            local ok_e, target = pcall(function() return hr:entity() end)
+            if ok_e and target and target:alive() and not target:is_local_player() then
                 should_click = true
             end
         elseif obj == "Entity" and type == "ENTITY" then
@@ -70,16 +71,17 @@ function module:handle_attack(player)
     end
 
     if should_click then
-        if player:is_using_item() then
+        local ok_use, using = pcall(function() return player:is_using_item() end)
+        if ok_use and using then
             local action = self.settings.on_item_use
             if action == "Wait" then
                 return
             elseif action == "Stop" then
-                player:stop_using_item()
+                pcall(function() player:stop_using_item() end)
             end
         end
 
-        mc.click()
+        pcall(function() mc.click() end)
         self.last_attack = now
     end
 end
@@ -90,8 +92,8 @@ function module:handle_use(player)
         return
     end
 
-    mc.set_right_click_delay(0)
-    mc.right_click()
+    pcall(function() mc.set_right_click_delay(0) end)
+    pcall(function() mc.right_click() end)
     self.last_use = now
 end
 

@@ -26,7 +26,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent_loader"
-version = "0.1.61"
+version = "0.1.65"
 dependencies = [
  "anyhow",
  "ctor",
@@ -372,7 +372,7 @@ dependencies = [
 
 [[package]]
 name = "client"
-version = "0.1.61"
+version = "0.1.65"
 dependencies = [
  "anyhow",
  "base64",
@@ -1156,7 +1156,7 @@ dependencies = [
 
 [[package]]
 name = "injector"
-version = "0.1.61"
+version = "0.1.65"
 dependencies = [
  "anyhow",
  "libc",
@@ -1285,7 +1285,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "launcher"
-version = "0.1.61"
+version = "0.1.65"
 dependencies = [
  "anyhow",
  "eframe",

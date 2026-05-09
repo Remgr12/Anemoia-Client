@@ -21,7 +21,7 @@ function module:on_tick()
     -- Drain one queued name per tick so the chat HUD isn't flooded.
     local player = mc.player()
     if not player then return end
-    player:display_message("§8[Pkt] §7" .. table.remove(self._queue, 1))
+    pcall(function() player:display_message("§8[Pkt] §7" .. table.remove(self._queue, 1)) end)
 end
 
 anemoia.on_packet_send(function(packet)

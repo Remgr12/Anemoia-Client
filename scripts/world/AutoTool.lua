@@ -6,7 +6,6 @@ local module = {
     _saved_slot = nil,
 }
 
--- Priority score by item type_id substring. Higher = better for mining.
 local TOOL_PRIORITY = {
     { pattern = "pickaxe", score = 5 },
     { pattern = "axe",     score = 4 },
@@ -29,7 +28,11 @@ end
 function module:on_disable()
     if self._saved_slot then
         local player = mc.player()
-        if player then player:inventory():set_selected_slot(self._saved_slot) end
+        if player then
+            pcall(function()
+                player:inventory():set_selected_slot(self._saved_slot)
+            end)
+        end
         self._saved_slot = nil
     end
 end
@@ -43,26 +46,36 @@ function module:on_tick()
 
     if not mining then
         if self._saved_slot then
-            player:inventory():set_selected_slot(self._saved_slot)
+            pcall(function()
+                player:inventory():set_selected_slot(self._saved_slot)
+            end)
             self._saved_slot = nil
         end
         return
     end
 
-    local inv = player:inventory()
-    local orig_slot = inv:selected_slot()
+    local ok_inv, inv = pcall(function() return player:inventory() end)
+    if not ok_inv or not inv then return end
+
+    local ok_cur, orig_slot = pcall(function() return inv:selected_slot() end)
+    if not ok_cur then return end
 
     local best_slot  = orig_slot
     local best_score = -1
 
+    -- Use item_at to inspect each hotbar slot without switching selected_slot.
     for slot = 0, 8 do
-        inv:set_selected_slot(slot)
-        local item = player:main_hand_item()
-        if not item:is_empty() then
-            local s = tool_score(item:type_id())
-            if s > best_score then
-                best_score = s
-                best_slot  = slot
+        local ok_item, item = pcall(function() return inv:item_at(slot) end)
+        if ok_item and item then
+            local ok_chk, empty, tid = pcall(function()
+                return item:is_empty(), item:type_id()
+            end)
+            if ok_chk and not empty then
+                local s = tool_score(tid)
+                if s > best_score then
+                    best_score = s
+                    best_slot  = slot
+                end
             end
         end
     end
@@ -71,7 +84,9 @@ function module:on_tick()
         self._saved_slot = orig_slot
     end
 
-    inv:set_selected_slot(best_slot)
+    if best_slot ~= orig_slot then
+        pcall(function() inv:set_selected_slot(best_slot) end)
+    end
 end
 
 anemoia.register(module)

@@ -20,7 +20,7 @@ function module:on_tick()
     if not self.settings.override then return end
     local player = mc.player()
     if not player then return end
-    player:set_pitch(self.settings.pitch)
+    pcall(function() player:set_pitch(self.settings.pitch) end)
 end
 
 anemoia.register(module)

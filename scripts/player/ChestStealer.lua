@@ -38,7 +38,8 @@ function module:on_tick()
         return
     end
 
-    mc.inventory_click(container_id, self._current_slot, 0, "QUICK_MOVE")
+    local ok = pcall(mc.inventory_click, container_id, self._current_slot, 0, "QUICK_MOVE")
+    if not ok then return end
     self._current_slot = self._current_slot + 1
     self._last_steal = now
 end
